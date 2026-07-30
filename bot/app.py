@@ -202,11 +202,11 @@ class App:
             ttk.Button(toolbar, text=text, command=command).pack(
                 side="left", padx=2
             )
-        columns = ("kind", "state", "name", "coordinates")
+        columns = ("kind", "state", "name", "enabled", "coordinates")
         self.items = ttk.Treeview(
             frame, columns=columns, show="headings", height=17, selectmode="browse"
         )
-        for column, width in zip(columns, (90, 90, 150, 230)):
+        for column, width in zip(columns, (80, 80, 135, 70, 220)):
             self.items.heading(column, text=column.title())
             self.items.column(column, width=width, stretch=column == "coordinates")
         self.items.pack(fill="both", expand=True, pady=10)
@@ -216,6 +216,7 @@ class App:
             ("Preview", self._preview_selected),
             ("Retake", self._retake_selected),
             ("Rename", self._rename_selected),
+            ("Enable / Disable", self._toggle_selected_zone),
             ("Delete", self._delete_selected),
         ):
             ttk.Button(actions, text=text, command=command).pack(side="left", padx=2)
@@ -821,20 +822,35 @@ class App:
                     self.config.click_zone_name(state, index),
                     region,
                     str(index),
+                    self.config.click_zone_enabled(state, index),
                 )
-        for state, regions in sorted(self.config.visual_regions.items()):
+        for state, regions in sorted(self.config.all_visual_regions.items()):
             for name, region in sorted(regions.items()):
-                self._insert_item("visual", state, name, region, name)
+                self._insert_item(
+                    "visual",
+                    state,
+                    name,
+                    region,
+                    name,
+                    self.config.visual_region_enabled(state, name),
+                )
         point = self.config.lobby_start_point
         if point:
             self.items.insert(
                 "", "end", iid="point|lobby|target", values=(
-                    "point", "lobby", "start target", f"x={point.x}, y={point.y}"
+                    "point", "lobby", "start target", "-",
+                    f"x={point.x}, y={point.y}"
                 )
             )
 
     def _insert_item(
-        self, kind: str, state: str, name: str, region: Region, key: str = ""
+        self,
+        kind: str,
+        state: str,
+        name: str,
+        region: Region,
+        key: str = "",
+        enabled: bool | None = None,
     ) -> None:
         coordinates = (
             f"x={region.left}, y={region.top}, "
@@ -842,7 +858,11 @@ class App:
         )
         self.items.insert(
             "", "end", iid=f"{kind}|{state}|{key}", values=(
-                kind, state, name, coordinates
+                kind,
+                state,
+                name,
+                "Yes" if enabled is True else "No" if enabled is False else "-",
+                coordinates,
             )
         )
 
@@ -857,7 +877,7 @@ class App:
         if kind == "zone":
             return self.config.click_zones[state][int(key)]
         if kind == "visual":
-            return self.config.visual_regions[state][key]
+            return self.config.all_visual_regions[state][key]
         point = self.config.lobby_start_point
         return Region(point.x - 14, point.y - 14, 28, 28) if point else None
 
@@ -914,10 +934,31 @@ class App:
         elif kind == "zone":
             self.config.rename_click_zone(state, int(key), name)
         elif kind == "visual":
-            if name in self.config.visual_regions.get(state, {}) and name != key:
+            if name in self.config.all_visual_regions.get(state, {}) and name != key:
                 messagebox.showerror("Duplicate name", "That region already exists.")
                 return
             self.config.rename_visual_region(state, key, name)
+        self._refresh_items()
+
+    def _toggle_selected_zone(self) -> None:
+        selected = self._selected()
+        if not selected:
+            return
+        kind, state, key = selected
+        if kind == "zone":
+            index = int(key)
+            enabled = self.config.click_zone_enabled(state, index)
+            self.config.set_click_zone_enabled(state, index, not enabled)
+        elif kind == "visual":
+            enabled = self.config.visual_region_enabled(state, key)
+            self.config.set_visual_region_enabled(state, key, not enabled)
+        else:
+            messagebox.showinfo(
+                "Not toggleable",
+                "Only visual regions and clickable zones can be enabled or disabled.",
+                parent=self.root,
+            )
+            return
         self._refresh_items()
 
     def _add_state(self) -> None:

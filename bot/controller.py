@@ -271,7 +271,7 @@ class BotController:
             state = self._latest_click_state
         if state is None:
             return
-        zones = self.config.click_zones.get(state, [])
+        zones = self.config.active_click_zones.get(state, [])
         point = Point(int(x), int(y))
         actual = next(
             (index for index, zone in enumerate(zones) if zone.contains(point)), None
@@ -279,7 +279,7 @@ class BotController:
         if actual is None:
             return
         if state == "exploring":
-            direction = self.config.click_zone_name(state, actual).lower()
+            direction = self.config.active_click_zone_name(state, actual).lower()
             if direction in {"north", "east", "south", "west"}:
                 self.maze.observe({direction})
                 self._start_pending_move(direction)
@@ -626,7 +626,7 @@ class BotController:
             return Decision(
                 state, self.config.lobby_start_point, "Start quest", confidence
             )
-        zones = self.config.click_zones.get(state, [])
+        zones = self.config.active_click_zones.get(state, [])
         visual_regions = self.config.visual_regions.get(state, {})
         if state == "exploring" and zones:
             boss_score = 0.0
@@ -760,7 +760,7 @@ class BotController:
                 self._latest_learning = (
                     state, context.copy(), len(zones), index
                 )
-            name = self.config.click_zone_name(state, index)
+            name = self.config.active_click_zone_name(state, index)
             return Decision(
                 state,
                 point,
@@ -774,7 +774,7 @@ class BotController:
             return Decision(
                 state,
                 point,
-                f"Only configured action: {self.config.click_zone_name(state, 0)}",
+                f"Only configured action: {self.config.active_click_zone_name(state, 0)}",
                 confidence,
                 {"zone_index": 0},
             )
@@ -783,9 +783,9 @@ class BotController:
     def _zone_index_named(self, state: str, name: str | None) -> int | None:
         if name is None:
             return None
-        zones = self.config.click_zones.get(state, [])
+        zones = self.config.active_click_zones.get(state, [])
         for index in range(len(zones)):
-            if self.config.click_zone_name(state, index).lower() == name:
+            if self.config.active_click_zone_name(state, index).lower() == name:
                 return index
         return None
 
@@ -800,7 +800,7 @@ class BotController:
             )
         ):
             return False
-        allowed = self.config.click_zones.get(decision.state_name, [])
+        allowed = self.config.active_click_zones.get(decision.state_name, [])
         teleporter_action = decision.details.get("teleporter_action")
         if decision.details.get("mog_close"):
             close_zone = self.config.mog_close_click_zone
@@ -858,7 +858,9 @@ class BotController:
                 self._mog_menu_pending = True
             index = decision.details.get("zone_index")
             if isinstance(index, int):
-                direction = self.config.click_zone_name("exploring", index).lower()
+                direction = self.config.active_click_zone_name(
+                    "exploring", index
+                ).lower()
                 if direction in {"north", "east", "south", "west"}:
                     if not self._start_pending_move(direction):
                         self.on_maze_update()

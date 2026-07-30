@@ -16,7 +16,9 @@ DEFAULTS = {
     "confidence_threshold": 0.82,
     "regions": {},
     "visual_regions": {},
+    "disabled_visual_regions": {},
     "click_zones": {},
+    "disabled_click_zones": {},
     "templates": {},
     "lobby_start_point": None,
     "states": ["menu", "lobby", "exploring", "combat"],
@@ -126,6 +128,18 @@ class Config:
         }
 
     @property
+    def active_click_zones(self) -> dict[str, list[Region]]:
+        disabled = self.data.setdefault("disabled_click_zones", {})
+        return {
+            state: [
+                Region(**value)
+                for index, value in enumerate(values)
+                if index not in set(disabled.get(state, []))
+            ]
+            for state, values in self.data["click_zones"].items()
+        }
+
+    @property
     def teleporter_click_zones(self) -> dict[str, list[Region | None]]:
         configured = self.data.setdefault("teleporter_click_zones", {})
         result: dict[str, list[Region | None]] = {}
@@ -165,6 +179,18 @@ class Config:
 
     @property
     def visual_regions(self) -> dict[str, dict[str, Region]]:
+        disabled = self.data.setdefault("disabled_visual_regions", {})
+        return {
+            state: {
+                name: Region(**value)
+                for name, value in values.items()
+                if name not in set(disabled.get(state, []))
+            }
+            for state, values in self.data["visual_regions"].items()
+        }
+
+    @property
+    def all_visual_regions(self) -> dict[str, dict[str, Region]]:
         return {
             state: {name: Region(**value) for name, value in values.items()}
             for state, values in self.data["visual_regions"].items()
@@ -207,6 +233,12 @@ class Config:
         names = self.data["click_zone_names"].get(state, [])
         if index < len(names):
             del names[index]
+        disabled = self.data.setdefault("disabled_click_zones", {}).get(state, [])
+        self.data["disabled_click_zones"][state] = [
+            value - 1 if value > index else value
+            for value in disabled
+            if value != index
+        ]
         self.save()
 
     def click_zone_name(self, state: str, index: int) -> str:
@@ -219,6 +251,35 @@ class Config:
         self.click_zone_name(state, index)
         self.data["click_zone_names"][state][index] = name
         self.save()
+
+    def click_zone_enabled(self, state: str, index: int) -> bool:
+        return index not in set(
+            self.data.setdefault("disabled_click_zones", {}).get(state, [])
+        )
+
+    def set_click_zone_enabled(
+        self, state: str, index: int, enabled: bool
+    ) -> None:
+        disabled = set(
+            self.data.setdefault("disabled_click_zones", {}).get(state, [])
+        )
+        if enabled:
+            disabled.discard(index)
+        else:
+            disabled.add(index)
+        self.data["disabled_click_zones"][state] = sorted(disabled)
+        self.save()
+
+    def active_click_zone_name(self, state: str, active_index: int) -> str:
+        disabled = set(
+            self.data.setdefault("disabled_click_zones", {}).get(state, [])
+        )
+        enabled_indices = [
+            index
+            for index in range(len(self.data["click_zones"].get(state, [])))
+            if index not in disabled
+        ]
+        return self.click_zone_name(state, enabled_indices[active_index])
 
     def delete_anchor(self, state: str) -> None:
         self.data["regions"].pop(f"{state}_anchor", None)
@@ -238,11 +299,37 @@ class Config:
 
     def delete_visual_region(self, state: str, name: str) -> None:
         self.data["visual_regions"].get(state, {}).pop(name, None)
+        disabled = self.data.setdefault("disabled_visual_regions", {}).get(state, [])
+        self.data["disabled_visual_regions"][state] = [
+            value for value in disabled if value != name
+        ]
         self.save()
 
     def rename_visual_region(self, state: str, old: str, new: str) -> None:
         regions = self.data["visual_regions"].setdefault(state, {})
         regions[new] = regions.pop(old)
+        disabled = self.data.setdefault("disabled_visual_regions", {}).get(state, [])
+        self.data["disabled_visual_regions"][state] = [
+            new if value == old else value for value in disabled
+        ]
+        self.save()
+
+    def visual_region_enabled(self, state: str, name: str) -> bool:
+        return name not in set(
+            self.data.setdefault("disabled_visual_regions", {}).get(state, [])
+        )
+
+    def set_visual_region_enabled(
+        self, state: str, name: str, enabled: bool
+    ) -> None:
+        disabled = set(
+            self.data.setdefault("disabled_visual_regions", {}).get(state, [])
+        )
+        if enabled:
+            disabled.discard(name)
+        else:
+            disabled.add(name)
+        self.data["disabled_visual_regions"][state] = sorted(disabled)
         self.save()
 
     @property
@@ -262,6 +349,8 @@ class Config:
         self.data["click_zones"].pop(state, None)
         self.data["click_zone_names"].pop(state, None)
         self.data["visual_regions"].pop(state, None)
+        self.data["disabled_click_zones"].pop(state, None)
+        self.data["disabled_visual_regions"].pop(state, None)
         self.data["anchor_names"].pop(state, None)
         self.save()
 

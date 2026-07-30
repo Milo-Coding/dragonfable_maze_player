@@ -28,7 +28,9 @@
   "states": ["menu", "lobby", "exploring", "combat"],
   "regions": {},
   "visual_regions": {},
+  "disabled_visual_regions": {},
   "click_zones": {},
+  "disabled_click_zones": {},
   "click_zone_names": {},
   "teleporter_click_zones": {
     "place": [null, null, null],

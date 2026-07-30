@@ -207,6 +207,14 @@ Retaking or adding combat visual regions or click zones changes the combat
 model shape, so its learned weights restart automatically. Keep Live mode off
 until the predictions are reliable.
 
+Visual regions and clickable zones can be temporarily disabled from the
+**Calibration** tab with **Enable / Disable**. Disabled items retain their
+names and coordinates in `config.json`, remain listed with `Enabled: No`, and
+can be restored later. Disabled visual regions are excluded from policy
+features and visual detectors. Disabled click zones are excluded from policy
+actions and the live-click allowlist. Changing either enabled set changes the
+combat model shape in the same way as adding or removing a region.
+
 - `regions`: named screen rectangles used for visual input. State anchors are
   named `menu_anchor`, `lobby_anchor`, `exploring_anchor`, and `combat_anchor`.
 - `templates`: maps a state name to a cropped reference PNG.
