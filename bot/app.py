@@ -128,7 +128,7 @@ class App:
         ).pack(anchor="w")
         ttk.Checkbutton(
             frame,
-            text="Learn from my clicks while in Training mode",
+            text="Learn from my combat clicks while in Training mode",
             variable=self.learning_enabled,
             command=self._toggle_learning,
         ).pack(anchor="w", pady=(12, 8))
@@ -925,7 +925,7 @@ class App:
         enabled = self.learning_enabled.get()
         self.controller.set_training_enabled(enabled)
         self.training_status.set(
-            "Learning enabled - clicks in configured zones will train the policy"
+            "Learning enabled - combat clicks will train the policy"
             if enabled else "Learning disabled"
         )
 

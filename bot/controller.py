@@ -68,6 +68,7 @@ class BotController:
         self.layout_status = self.tile_layouts.last_match_status
         self.training_enabled = False
         self._latest_learning: tuple[str, np.ndarray, int, int] | None = None
+        self._latest_click_state: str | None = None
         self._learning_lock = threading.Lock()
         self._binding_lock = threading.Lock()
         self._binding_capture_mode: Mode | None = None
@@ -206,15 +207,15 @@ class BotController:
             return
         with self._learning_lock:
             learning = self._latest_learning
-        if learning is None:
+            state = self._latest_click_state
+        if state is None:
             return
-        state, context, action_count, predicted = learning
         zones = self.config.click_zones.get(state, [])
         point = Point(int(x), int(y))
         actual = next(
             (index for index, zone in enumerate(zones) if zone.contains(point)), None
         )
-        if actual is None or action_count != len(zones):
+        if actual is None:
             return
         if state == "exploring":
             direction = self.config.click_zone_name(state, actual).lower()
@@ -222,9 +223,18 @@ class BotController:
                 self.maze.observe({direction})
                 self._start_pending_move(direction)
                 self.on_maze_update()
-        if not self.training_enabled:
+        if not self.training_enabled or learning is None:
             return
-        reward = self.policy.train(state, context, action_count, predicted, actual)
+        learned_state, context, action_count, predicted = learning
+        if (
+            learned_state != "combat"
+            or state != learned_state
+            or action_count != len(zones)
+        ):
+            return
+        reward = self.policy.train(
+            learned_state, context, action_count, predicted, actual
+        )
         accuracy = self.policy.matches / max(1, self.policy.examples)
         self.on_training_event(
             f"Reward {reward}: predicted zone {predicted + 1}, "
@@ -510,6 +520,11 @@ class BotController:
         self, state: str, confidence: float, frame: np.ndarray
     ) -> Decision:
         self._track_clear(state)
+        with self._learning_lock:
+            self._latest_learning = None
+            self._latest_click_state = (
+                state if state != "unknown" else None
+            )
         if state == "lobby" and self.config.lobby_start_point:
             self.maze.reset()
             self._clear_pending_move()
@@ -521,73 +536,42 @@ class BotController:
             )
         zones = self.config.click_zones.get(state, [])
         visual_regions = self.config.visual_regions.get(state, {})
-        if state != "unknown" and zones:
-            context = self.policy.features(frame, visual_regions)
-            index, probability = self.policy.predict(state, context, len(zones))
+        if state == "exploring" and zones:
             boss_score = 0.0
             boss_direction: str | None = None
-            if state == "exploring":
-                previous_boss_status = self.boss_status
-                search_area = visual_regions.get("boss_search_area")
-                boss_center, boss_score = self.boss_detector.detect(frame, search_area)
-                if boss_center is not None and search_area is not None:
-                    boss_direction = "mid"
-                    self.boss_direction = boss_direction
-                    boss_index = self._zone_index_named(state, boss_direction)
-                    if boss_index is not None:
-                        index = boss_index
-                    self.maze.observe(
-                        {boss_direction} if boss_direction in {
-                            "north", "east", "south", "west"
-                        } else set(),
-                        tile_type="boss",
-                    )
-                    self.boss_status = (
-                        f"Boss detected ({boss_score:.0%}); prioritize {boss_direction}"
-                    )
-                else:
-                    self.boss_direction = None
-                    self.boss_status = (
-                        f"Boss not detected (best match {boss_score:.0%})"
-                        if search_area is not None and self.boss_detector.template is not None
-                        else "Boss detection needs boss sprite and boss_search_area"
-                    )
-                if self.boss_status != previous_boss_status:
-                    self.on_maze_update()
+            previous_boss_status = self.boss_status
+            search_area = visual_regions.get("boss_search_area")
+            boss_center, boss_score = self.boss_detector.detect(frame, search_area)
+            if boss_center is not None and search_area is not None:
+                boss_direction = "mid"
+                self.boss_direction = boss_direction
+                self.maze.observe(set(), tile_type="boss")
+                self.boss_status = (
+                    f"Boss detected ({boss_score:.0%}); prioritize {boss_direction}"
+                )
+            else:
+                self.boss_direction = None
+                self.boss_status = (
+                    f"Boss not detected (best match {boss_score:.0%})"
+                    if search_area is not None and self.boss_detector.template is not None
+                    else "Boss detection needs boss sprite and boss_search_area"
+                )
+            if self.boss_status != previous_boss_status:
+                self.on_maze_update()
+            recommendation = self.maze.recommendation()
+            selected_name = "mid" if boss_direction else recommendation
+            index = self._zone_index_named(state, selected_name)
+            if index is None:
+                return Decision(
+                    state,
+                    reason=f"No click zone named {selected_name!r}",
+                    confidence=confidence,
+                )
             zone = zones[index]
             point = Point(zone.left + zone.width // 2, zone.top + zone.height // 2)
-            with self._learning_lock:
-                self._latest_learning = (
-                    state,
-                    context.copy(),
-                    len(zones),
-                    index,
-                )
-            name = self.config.click_zone_name(state, index)
-            recommendation = self.maze.recommendation() if state == "exploring" else None
-            if state == "exploring":
-                selected_name = "mid" if boss_direction else recommendation
-                selected_index = self._zone_index_named(state, selected_name)
-                if selected_index is not None:
-                    index = selected_index
-                    zone = zones[index]
-                    point = Point(
-                        zone.left + zone.width // 2,
-                        zone.top + zone.height // 2,
-                    )
-                    name = self.config.click_zone_name(state, index)
-                    with self._learning_lock:
-                        self._latest_learning = (
-                            state,
-                            context.copy(),
-                            len(zones),
-                            index,
-                        )
-            reason = f"Policy {name} ({probability:.0%})"
+            reason = f"Maze recommendation: {recommendation}"
             if boss_direction:
                 reason = f"BOSS {boss_score:.0%}: move mid"
-            elif recommendation:
-                reason = f"Maze recommendation: {recommendation}"
             return Decision(
                 state,
                 point,
@@ -595,13 +579,37 @@ class BotController:
                 confidence,
                 {
                     "zone_index": index,
-                    "policy_confidence": probability,
                     "boss_score": boss_score,
                     "boss_direction": boss_direction,
                 },
             )
-        with self._learning_lock:
-            self._latest_learning = None
+        if state == "combat" and zones:
+            context = self.policy.features(frame, visual_regions)
+            index, probability = self.policy.predict(state, context, len(zones))
+            zone = zones[index]
+            point = Point(zone.left + zone.width // 2, zone.top + zone.height // 2)
+            with self._learning_lock:
+                self._latest_learning = (
+                    state, context.copy(), len(zones), index
+                )
+            name = self.config.click_zone_name(state, index)
+            return Decision(
+                state,
+                point,
+                f"Combat policy: {name} ({probability:.0%})",
+                confidence,
+                {"zone_index": index, "policy_confidence": probability},
+            )
+        if state != "unknown" and len(zones) == 1:
+            zone = zones[0]
+            point = Point(zone.left + zone.width // 2, zone.top + zone.height // 2)
+            return Decision(
+                state,
+                point,
+                f"Only configured action: {self.config.click_zone_name(state, 0)}",
+                confidence,
+                {"zone_index": 0},
+            )
         return Decision(state, reason="No action configured", confidence=confidence)
 
     def _zone_index_named(self, state: str, name: str | None) -> int | None:

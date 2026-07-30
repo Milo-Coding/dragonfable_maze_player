@@ -24,7 +24,7 @@ class Tile:
 
 
 class MazeMemory:
-    """A small DFS map for randomized mazes."""
+    """A map of explored rooms with bounded-depth frontier exploration."""
 
     def __init__(self) -> None:
         self.reset()
@@ -71,9 +71,22 @@ class MazeMemory:
 
     def choose_exit(self) -> str | None:
         tile = self.tiles.setdefault(self.position, Tile())
-        for direction in ("north", "east", "south", "west"):
-            if direction in tile.exits and direction not in tile.tried:
-                return direction
+        untried = [
+            direction
+            for direction in ("north", "east", "south", "west")
+            if direction in tile.exits and direction not in tile.tried
+        ]
+        if untried:
+            # A boss room is a dead end. At a branch, inspect the path with the
+            # smallest remaining possible search area first so short,
+            # constrained branches are eliminated before deep ones.
+            return min(
+                untried,
+                key=lambda direction: (
+                    self.maximum_possible_depth(direction),
+                    tuple(DIRECTIONS).index(direction),
+                ),
+            )
 
         # The current room is exhausted. Travel by the shortest known route to
         # the nearest room that still has an unexplored branch.
@@ -96,6 +109,38 @@ class MazeMemory:
                 visited.add(neighbor)
                 queue.append((neighbor, first_direction or direction))
         return None
+
+    def maximum_possible_depth(self, direction: str) -> int:
+        """Upper-bound a branch's depth by its reachable unexplored grid cells.
+
+        Unknown passages may ultimately be walls, so the most conservative
+        assumption is that every adjacent unknown cell connects. Known rooms
+        form barriers; this lets edges and previously explored rooms constrain
+        a branch before its actual layout is visible.
+        """
+        if direction not in DIRECTIONS:
+            raise ValueError(f"Unknown maze direction: {direction}")
+        dx, dy = DIRECTIONS[direction]
+        start = (self.position[0] + dx, self.position[1] + dy)
+        if not (0 <= start[0] < 10 and 0 <= start[1] < 10):
+            return 0
+        if start in self.tiles:
+            return 0
+
+        known = set(self.tiles)
+        reachable = {start}
+        queue = deque([start])
+        while queue:
+            x, y = queue.popleft()
+            for step_x, step_y in DIRECTIONS.values():
+                neighbor = (x + step_x, y + step_y)
+                if not (0 <= neighbor[0] < 10 and 0 <= neighbor[1] < 10):
+                    continue
+                if neighbor in known or neighbor in reachable:
+                    continue
+                reachable.add(neighbor)
+                queue.append(neighbor)
+        return len(reachable)
 
     def recommendation(self) -> str | None:
         return self.choose_exit()

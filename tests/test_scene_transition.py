@@ -104,6 +104,26 @@ class MazeMemoryTests(unittest.TestCase):
         self.assertFalse(maze.moved("north"))
         self.assertNotIn("north", maze.tiles[(0, 0)].tried)
 
+    def test_branch_prefers_smaller_reachable_unexplored_region(self) -> None:
+        maze = MazeMemory()
+        maze.set_position(1, 1)
+        maze.observe({"north", "east"})
+        # Known tiles form a wall that traps the north branch in one cell.
+        for position in ((0, 0), (2, 0)):
+            maze.set_position(*position)
+        maze.set_position(1, 1)
+
+        self.assertEqual(1, maze.maximum_possible_depth("north"))
+        self.assertGreater(maze.maximum_possible_depth("east"), 1)
+        self.assertEqual("north", maze.recommendation())
+
+    def test_equal_branch_depth_preserves_direction_order(self) -> None:
+        maze = MazeMemory()
+        maze.set_position(5, 5)
+        maze.observe({"east", "south"})
+
+        self.assertEqual("east", maze.recommendation())
+
 
 class PlayerMovementTrackerTests(unittest.TestCase):
     def test_requires_movement_then_stable_position(self) -> None:

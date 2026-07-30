@@ -12,7 +12,7 @@ A safety-first Windows desktop bot foundation based on `Idea.md`.
 - Primary-monitor capture and template-based state detection.
 - A second mode check immediately before every click.
 - State-specific rectangular click allowlists.
-- Maze memory with closest-frontier exploration and reset support.
+- Maze memory with bounded-depth branch exploration and reset support.
 - Lobby start action hook.
 
 Live mode cannot click until both a target and a click zone are configured. The
@@ -130,10 +130,13 @@ Matching a submitted layout automatically adds its saved paths to unconfirmed
 tiles. The 10 by 10 grid starts at `(0,0)`, shows the current tile in green, and
 the solver's recommendation in yellow.
 
-The solver has no fixed coordinate goal. It takes an untried exit in the
-current room, then uses the shortest known route to the nearest mapped room
-that still has an unexplored branch. This closest-frontier strategy exposes new
-branches quickly. A detected boss overrides the frontier recommendation.
+The solver has no fixed coordinate goal. At a branch, it estimates each exit's
+maximum possible depth by counting the unknown 10 by 10 grid cells reachable
+without crossing a mapped room, and tries the smallest region first. This
+prioritizes short, constrained branches where the dead-end boss room is more
+quickly found or ruled out. When the current room is exhausted, it uses the
+shortest known route to another mapped room with an unexplored branch. A
+detected boss overrides the maze recommendation.
 
 ### Boss detection
 
@@ -142,29 +145,33 @@ where the boss sprite can appear. In the Maze tab, choose **Capture boss
 sprite** and drag tightly around the boss itself without including room
 background.
 
-During exploration, the bot always selects the click zone named by the
-closest-frontier maze recommendation. A boss match overrides that recommendation
-and always selects the `mid` click zone. The learned action policy does not
-override either exploration behavior. The Maze tab labels the boss action as
-`BOSS`.
+During exploration, the bot always selects the click zone named by the maze
+recommendation. A boss match overrides that recommendation and always selects
+the `mid` click zone. The learned action policy is not evaluated or trained
+during exploration. The Maze tab labels the boss action as `BOSS`.
 
 ### Training the action policy
 
-The policy treats each clickable zone in a state as one possible action. It
+The policy is used only for combat, where each clickable zone is one possible
+action. Exploration is controlled entirely by the maze solver and boss
+detection. Any other scene with exactly one configured click zone selects that
+zone directly without prediction or training. The combat policy
 summarizes the color and brightness of the state's named visual regions and
 uses that context to predict a zone.
 
 1. Select **Training** on the Control tab.
 2. On the Training tab, enable **Learn from my clicks while in Training mode**.
-3. Play normally. The green marker shows the policy prediction.
+3. Enter combat and play normally. The green marker shows the combat policy
+   prediction.
 4. Click one of the configured zones. A prediction match earns reward 1; a
    different configured-zone click earns reward 0 and teaches the selected
    action.
 
-Clicks outside configured zones are ignored by training. The learned model and
-statistics are stored in `policy.json`. Retaking or adding visual regions or
-click zones changes the model shape for that state, so its learned weights
-restart automatically. Keep Live mode off until the predictions are reliable.
+Non-combat clicks and clicks outside configured combat zones are ignored by
+policy training. The learned model and statistics are stored in `policy.json`.
+Retaking or adding combat visual regions or click zones changes the combat
+model shape, so its learned weights restart automatically. Keep Live mode off
+until the predictions are reliable.
 
 - `regions`: named screen rectangles used for visual input. State anchors are
   named `menu_anchor`, `lobby_anchor`, `exploring_anchor`, and `combat_anchor`.
