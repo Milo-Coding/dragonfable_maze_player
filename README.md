@@ -138,6 +138,24 @@ quickly found or ruled out. When the current room is exhausted, it uses the
 shortest known route to another mapped room with an unexplored branch. A
 detected boss overrides the maze recommendation.
 
+### Teleporter routing
+
+The solver uses one teleporter as a branch checkpoint. At a tile with multiple
+unexplored exits, it places the teleporter and explores the shorter-depth path
+first. It keeps that anchor until its branch tile is exhausted instead of
+replacing it at a nested branch. When the current path is exhausted, it returns
+directly to the anchored tile while that tile still has another unexplored exit.
+It does not use the teleporter as a general shortcut to unrelated frontiers,
+which avoids repeated back-and-forth teleports. The placement and return clicks
+are execution steps only and have zero pathfinding cost.
+
+Use the **Teleporter** tab to capture the three placement zones and two return
+zones in click order. All steps must be configured before the corresponding
+action is enabled. Teleporter sequences use the shorter
+`teleporter_click_interval_seconds` delay (0.25 seconds by default), while
+ordinary live actions keep their normal delay. The maze display marks the
+current anchor with `T`.
+
 ### Boss detection
 
 Add an exploration visual region named `boss_search_area` covering every place
@@ -149,6 +167,11 @@ During exploration, the bot always selects the click zone named by the maze
 recommendation. A boss match overrides that recommendation and always selects
 the `mid` click zone. The learned action policy is not evaluated or trained
 during exploration. The Maze tab labels the boss action as `BOSS`.
+
+Boss detection also interrupts an in-progress teleporter placement or return.
+The discovered tile is retained in maze memory and marked `B` on the grid. If
+the player is later displaced, routing back to that known boss tile takes
+priority over exploration and teleporter actions.
 
 ### Training the action policy
 

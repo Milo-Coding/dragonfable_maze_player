@@ -12,6 +12,7 @@ DEFAULTS = {
     "monitor": 1,
     "clears": 10,
     "tick_seconds": 0.5,
+    "teleporter_click_interval_seconds": 0.25,
     "confidence_threshold": 0.82,
     "regions": {},
     "visual_regions": {},
@@ -20,6 +21,10 @@ DEFAULTS = {
     "lobby_start_point": None,
     "states": ["menu", "lobby", "exploring", "combat"],
     "click_zone_names": {},
+    "teleporter_click_zones": {
+        "place": [None, None, None],
+        "return": [None, None],
+    },
     "anchor_names": {},
     "boss_template": None,
     "boss_match_threshold": 0.82,
@@ -116,6 +121,44 @@ class Config:
             state: [Region(**value) for value in values]
             for state, values in self.data["click_zones"].items()
         }
+
+    @property
+    def teleporter_click_zones(self) -> dict[str, list[Region | None]]:
+        configured = self.data.setdefault("teleporter_click_zones", {})
+        result: dict[str, list[Region | None]] = {}
+        for action, count in (("place", 3), ("return", 2)):
+            values = list(configured.get(action, []))
+            values = (values + [None] * count)[:count]
+            result[action] = [
+                Region(**value) if value is not None else None for value in values
+            ]
+        return result
+
+    def set_teleporter_click_zone(
+        self, action: str, index: int, region: Region
+    ) -> None:
+        required = {"place": 3, "return": 2}
+        if action not in required or not 0 <= index < required[action]:
+            raise ValueError("Invalid teleporter action step")
+        zones = self.data.setdefault("teleporter_click_zones", {}).setdefault(
+            action, [None] * required[action]
+        )
+        while len(zones) < required[action]:
+            zones.append(None)
+        zones[index] = asdict(region)
+        self.save()
+
+    def delete_teleporter_click_zone(self, action: str, index: int) -> None:
+        required = {"place": 3, "return": 2}
+        if action not in required or not 0 <= index < required[action]:
+            raise ValueError("Invalid teleporter action step")
+        zones = self.data.setdefault("teleporter_click_zones", {}).setdefault(
+            action, [None] * required[action]
+        )
+        while len(zones) < required[action]:
+            zones.append(None)
+        zones[index] = None
+        self.save()
 
     @property
     def visual_regions(self) -> dict[str, dict[str, Region]]:

@@ -75,6 +75,7 @@ class BotController:
         self._last_live_click = 0.0
         self._latest_edge_signatures: dict[str, np.ndarray] = {}
         self._pending_maze_move: str | None = None
+        self._teleporter_sequence: tuple[str, int] | None = None
         self._pending_maze_move_started_at: float | None = None
         self._transition_frame = 0
         self._transition_activity_seen = False
@@ -106,6 +107,8 @@ class BotController:
 
     def set_mode(self, mode: Mode) -> None:
         self.mode = mode
+        if mode == Mode.IDLE:
+            self._teleporter_sequence = None
 
     def set_training_enabled(self, enabled: bool) -> None:
         self.training_enabled = enabled
@@ -183,6 +186,7 @@ class BotController:
 
     def reset_maze(self) -> None:
         self.maze.reset()
+        self._teleporter_sequence = None
         self._clear_pending_move()
         self._latest_edge_signatures = {}
         self.maze_transition_status = "No pending room transition"
@@ -193,6 +197,34 @@ class BotController:
         self._clear_pending_move()
         self.maze_transition_status = f"Location manually set to ({x}, {y})"
         self.on_maze_update()
+
+    def _teleporter_ready(self, action: str) -> bool:
+        return all(
+            zone is not None
+            for zone in self.config.teleporter_click_zones.get(action, [])
+        )
+
+    def _teleporter_decision(
+        self, state: str, confidence: float, action: str, step: int
+    ) -> Decision | None:
+        zones = self.config.teleporter_click_zones.get(action, [])
+        if step >= len(zones) or zones[step] is None:
+            self._teleporter_sequence = None
+            return None
+        zone = zones[step]
+        assert zone is not None
+        point = Point(zone.left + zone.width // 2, zone.top + zone.height // 2)
+        label = "Place" if action == "place" else "Return to"
+        return Decision(
+            state,
+            point,
+            f"{label} teleporter: step {step + 1}/{len(zones)}",
+            confidence,
+            {
+                "teleporter_action": action,
+                "teleporter_step": step,
+            },
+        )
 
     @property
     def movement_pending(self) -> bool:
@@ -245,6 +277,7 @@ class BotController:
         if key == keyboard.Key.esc:
             self.cancel_binding_capture()
             self.mode = Mode.IDLE
+            self._teleporter_sequence = None
             self.on_emergency_stop()
             return
         binding = self._key_binding(key)
@@ -274,6 +307,7 @@ class BotController:
                 if decision_due:
                     decision = self._decide(state, confidence, frame)
                     self.on_update(decision)
+                    click_interval = self._click_interval(decision)
                     if (
                         self.mode == Mode.LIVE
                         and decision.point
@@ -281,11 +315,14 @@ class BotController:
                             decision.state_name == "exploring"
                             and self.movement_pending
                         )
-                        and now - self._last_live_click >= 1.5
+                        and now - self._last_live_click >= click_interval
                     ):
                         self._safe_click(decision)
                         self._last_live_click = time.monotonic()
-                    next_decision = now + float(self.config.data["tick_seconds"])
+                    next_decision = now + min(
+                        float(self.config.data["tick_seconds"]),
+                        click_interval,
+                    )
                 time.sleep(
                     max(
                         0.02,
@@ -296,6 +333,18 @@ class BotController:
                         ),
                     )
                 )
+
+    def _click_interval(self, decision: Decision) -> float:
+        if decision.details.get("teleporter_action") in {"place", "return"}:
+            return max(
+                0.05,
+                float(
+                    self.config.data.get(
+                        "teleporter_click_interval_seconds", 0.25
+                    )
+                ),
+            )
+        return 1.5
 
     @staticmethod
     def _edge_signature(frame: np.ndarray, region) -> np.ndarray | None:
@@ -519,12 +568,19 @@ class BotController:
     def _decide(
         self, state: str, confidence: float, frame: np.ndarray
     ) -> Decision:
-        self._track_clear(state)
         with self._learning_lock:
             self._latest_learning = None
             self._latest_click_state = (
                 state if state != "unknown" else None
             )
+        if self._teleporter_sequence is not None and state != "exploring":
+            action, step = self._teleporter_sequence
+            decision = self._teleporter_decision(
+                state, confidence, action, step
+            )
+            if decision is not None:
+                return decision
+        self._track_clear(state)
         if state == "lobby" and self.config.lobby_start_point:
             self.maze.reset()
             self._clear_pending_move()
@@ -543,12 +599,19 @@ class BotController:
             search_area = visual_regions.get("boss_search_area")
             boss_center, boss_score = self.boss_detector.detect(frame, search_area)
             if boss_center is not None and search_area is not None:
+                self._teleporter_sequence = None
+                if self._pending_maze_move is not None:
+                    self._clear_pending_move()
+                    self.maze_transition_status = (
+                        "Pending movement canceled by boss detection"
+                    )
                 boss_direction = "mid"
                 self.boss_direction = boss_direction
                 self.maze.observe(set(), tile_type="boss")
                 self.boss_status = (
                     f"Boss detected ({boss_score:.0%}); prioritize {boss_direction}"
                 )
+
             else:
                 self.boss_direction = None
                 self.boss_status = (
@@ -558,8 +621,38 @@ class BotController:
                 )
             if self.boss_status != previous_boss_status:
                 self.on_maze_update()
-            recommendation = self.maze.recommendation()
-            selected_name = "mid" if boss_direction else recommendation
+            if boss_direction:
+                recommendation = "mid"
+            else:
+                if (
+                    self.maze.boss_position is not None
+                    and self.maze.boss_position != self.maze.position
+                ):
+                    self._teleporter_sequence = None
+                elif self._teleporter_sequence is not None:
+                    action, step = self._teleporter_sequence
+                    decision = self._teleporter_decision(
+                        state, confidence, action, step
+                    )
+                    if decision is not None:
+                        return decision
+                recommendation = self.maze.recommended_action(
+                    self._teleporter_ready("place"),
+                    self._teleporter_ready("return"),
+                )
+                if recommendation in {"place_teleporter", "return_teleporter"}:
+                    action = (
+                        "place"
+                        if recommendation == "place_teleporter"
+                        else "return"
+                    )
+                    self._teleporter_sequence = (action, 0)
+                    decision = self._teleporter_decision(
+                        state, confidence, action, 0
+                    )
+                    if decision is not None:
+                        return decision
+            selected_name = recommendation
             index = self._zone_index_named(state, selected_name)
             if index is None:
                 return Decision(
@@ -633,6 +726,13 @@ class BotController:
         ):
             return False
         allowed = self.config.click_zones.get(decision.state_name, [])
+        teleporter_action = decision.details.get("teleporter_action")
+        if teleporter_action in {"place", "return"}:
+            allowed = [
+                zone
+                for zone in self.config.teleporter_click_zones[teleporter_action]
+                if zone is not None
+            ]
         if not any(zone.contains(point) for zone in allowed):
             self.on_update(
                 Decision(
@@ -645,6 +745,31 @@ class BotController:
         # Check the mode again immediately before the OS-level click.
         if self.mode != Mode.LIVE:
             return False
+        if teleporter_action in {"place", "return"}:
+            step = decision.details.get("teleporter_step")
+            if not isinstance(step, int):
+                return False
+            sequence = self._teleporter_sequence
+            if sequence != (teleporter_action, step):
+                return False
+            zones = self.config.teleporter_click_zones[teleporter_action]
+            next_step = step + 1
+            if next_step < len(zones):
+                self._teleporter_sequence = (teleporter_action, next_step)
+            else:
+                self._teleporter_sequence = None
+                if teleporter_action == "place":
+                    self.maze.place_teleporter()
+                    self.maze_transition_status = (
+                        f"Teleporter placed at {self.maze.position}"
+                    )
+                else:
+                    self.maze.return_to_teleporter()
+                    self._clear_pending_move()
+                    self.maze_transition_status = (
+                        f"Returned to teleporter at {self.maze.position}"
+                    )
+                self.on_maze_update()
         if decision.state_name == "exploring":
             index = decision.details.get("zone_index")
             if isinstance(index, int):

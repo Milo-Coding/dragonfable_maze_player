@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from bot.maze import MazeMemory
+from bot.maze import MazeMemory, Tile
 from bot.vision import (
     PlayerMovementTracker,
     SceneTransitionDetector,
@@ -123,6 +123,74 @@ class MazeMemoryTests(unittest.TestCase):
         maze.observe({"east", "south"})
 
         self.assertEqual("east", maze.recommendation())
+
+    def test_places_teleporter_at_branch(self) -> None:
+        maze = MazeMemory()
+        maze.set_position(5, 5)
+        maze.observe({"east", "south"})
+
+        self.assertEqual(
+            "place_teleporter",
+            maze.recommended_action(can_place=True, can_return=True),
+        )
+        maze.place_teleporter()
+        self.assertEqual(
+            "east", maze.recommended_action(can_place=True, can_return=True)
+        )
+
+    def test_returns_to_unfinished_anchored_branch(self) -> None:
+        maze = MazeMemory()
+        maze.tiles = {
+            (0, 0): Tile(exits={"east", "south"}, tried={"east"}),
+            (1, 0): Tile(exits={"west"}, tried={"west"}),
+        }
+        maze.position = (1, 0)
+        maze.teleporter_position = (0, 0)
+
+        self.assertEqual(
+            "return_teleporter",
+            maze.recommended_action(can_place=True, can_return=True),
+        )
+        self.assertTrue(maze.return_to_teleporter())
+        self.assertEqual((0, 0), maze.position)
+
+    def test_does_not_use_teleporter_for_unrelated_frontier(self) -> None:
+        maze = MazeMemory()
+        maze.tiles = {
+            (0, 0): Tile(exits={"east"}, tried={"east"}),
+            (1, 0): Tile(exits={"east", "west"}, tried={"east", "west"}),
+            (2, 0): Tile(exits={"west", "south"}, tried={"west"}),
+        }
+        maze.position = (0, 0)
+        maze.teleporter_position = (1, 0)
+
+        self.assertEqual(
+            "east", maze.recommended_action(can_place=True, can_return=True)
+        )
+
+    def test_known_boss_tile_overrides_teleporter_and_frontiers(self) -> None:
+        maze = MazeMemory()
+        maze.tiles = {
+            (0, 0): Tile(exits={"east", "south"}, tried={"east"}),
+            (1, 0): Tile(exits={"east", "west"}, tried={"east", "west"}),
+            (2, 0): Tile(exits={"west"}, tried={"west"}, tile_type="boss"),
+        }
+        maze.position = (0, 0)
+        maze.teleporter_position = (1, 0)
+        maze.boss_position = (2, 0)
+
+        self.assertEqual(
+            "east", maze.recommended_action(can_place=True, can_return=True)
+        )
+
+    def test_observing_boss_persists_its_coordinate(self) -> None:
+        maze = MazeMemory()
+        maze.set_position(7, 4)
+        maze.observe({"west"}, tile_type="boss")
+
+        self.assertEqual((7, 4), maze.boss_position)
+        maze.set_position(0, 0)
+        self.assertEqual((7, 4), maze.boss_position)
 
 
 class PlayerMovementTrackerTests(unittest.TestCase):

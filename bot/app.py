@@ -35,6 +35,7 @@ class App:
         self.training_binding = tk.StringVar()
         self.live_binding = tk.StringVar()
         self.maze_status = tk.StringVar(value="Current: (0, 0)  Searching for boss")
+        self.teleporter_status = tk.StringVar()
         self.maze_exit_vars = {
             direction: tk.BooleanVar(value=False)
             for direction in ("north", "east", "south", "west")
@@ -82,18 +83,21 @@ class App:
         training = ttk.Frame(notebook, padding=16)
         calibration = ttk.Frame(notebook, padding=12)
         maze = ttk.Frame(notebook, padding=12)
+        teleporter = ttk.Frame(notebook, padding=16)
         sprites = ttk.Frame(notebook, padding=12)
         controls = ttk.Frame(notebook, padding=16)
         notebook.add(control, text="Control")
         notebook.add(training, text="Training")
         notebook.add(calibration, text="Calibration")
         notebook.add(maze, text="Maze")
+        notebook.add(teleporter, text="Teleporter")
         notebook.add(sprites, text="Sprites")
         notebook.add(controls, text="Controls")
         self._build_control_tab(control)
         self._build_training_tab(training)
         self._build_calibration_tab(calibration)
         self._build_maze_tab(maze)
+        self._build_teleporter_tab(teleporter)
         self._build_sprites_tab(sprites)
         self._build_controls_tab(controls)
         notebook.bind("<<NotebookTabChanged>>", self._tab_changed)
@@ -319,6 +323,100 @@ class App:
             wraplength=190,
         ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(5, 0))
         self._draw_maze()
+
+    def _build_teleporter_tab(self, frame: ttk.Frame) -> None:
+        ttk.Label(
+            frame, text="Teleporter action calibration", font=("", 12, "bold")
+        ).pack(anchor="w")
+        ttk.Label(
+            frame,
+            text="Capture each click in execution order. Placement uses three "
+            "clicks and return uses two. These clicks have no pathfinding cost.",
+            wraplength=620,
+        ).pack(anchor="w", pady=(6, 14))
+        for action, count in (("place", 3), ("return", 2)):
+            group = ttk.LabelFrame(
+                frame,
+                text=(
+                    "Place teleporter"
+                    if action == "place"
+                    else "Return to teleporter"
+                ),
+                padding=12,
+            )
+            group.pack(fill="x", pady=(0, 12))
+            for index in range(count):
+                ttk.Label(group, text=f"Click {index + 1}", width=12).grid(
+                    row=index, column=0, sticky="w", pady=4
+                )
+                ttk.Button(
+                    group,
+                    text="Set zone",
+                    command=lambda selected=action, step=index:
+                        self._capture_teleporter_zone(selected, step),
+                ).grid(row=index, column=1, padx=4, pady=4)
+                ttk.Button(
+                    group,
+                    text="Preview",
+                    command=lambda selected=action, step=index:
+                        self._preview_teleporter_zone(selected, step),
+                ).grid(row=index, column=2, padx=4, pady=4)
+                ttk.Button(
+                    group,
+                    text="Clear",
+                    command=lambda selected=action, step=index:
+                        self._clear_teleporter_zone(selected, step),
+                ).grid(row=index, column=3, padx=4, pady=4)
+        ttk.Label(
+            frame, textvariable=self.teleporter_status, foreground="#0d47a1"
+        ).pack(anchor="w", pady=(4, 0))
+        self._refresh_teleporter_status()
+
+    def _capture_teleporter_zone(self, action: str, index: int) -> None:
+        self.controller.set_mode(Mode.IDLE)
+        ScreenSelector(
+            self.root,
+            int(self.config.data["monitor"]),
+            f"Drag around teleporter {action} click {index + 1}",
+            on_region=lambda region, _crop:
+                self._save_teleporter_zone(action, index, region),
+        )
+
+    def _save_teleporter_zone(
+        self, action: str, index: int, region: Region
+    ) -> None:
+        self.config.set_teleporter_click_zone(action, index, region)
+        self._refresh_teleporter_status()
+        self.status.set(f"Saved teleporter {action} click {index + 1}")
+
+    def _preview_teleporter_zone(self, action: str, index: int) -> None:
+        zone = self.config.teleporter_click_zones[action][index]
+        if zone is None:
+            messagebox.showinfo(
+                "Zone not set",
+                f"Teleporter {action} click {index + 1} has not been captured.",
+                parent=self.root,
+            )
+            return
+        self.controller.set_mode(Mode.IDLE)
+        ScreenSelector(
+            self.root,
+            int(self.config.data["monitor"]),
+            f"Teleporter {action} click {index + 1}",
+            highlight_region=zone,
+        )
+
+    def _clear_teleporter_zone(self, action: str, index: int) -> None:
+        self.config.delete_teleporter_click_zone(action, index)
+        self._refresh_teleporter_status()
+
+    def _refresh_teleporter_status(self) -> None:
+        zones = self.config.teleporter_click_zones
+        place = sum(zone is not None for zone in zones["place"])
+        returns = sum(zone is not None for zone in zones["return"])
+        self.teleporter_status.set(
+            f"Placement: {place}/3 zones set    Return: {returns}/2 zones set"
+        )
 
     def _build_sprites_tab(self, frame: ttk.Frame) -> None:
         ttk.Label(frame, text="Sprite management", font=("", 12, "bold")).pack(
@@ -847,7 +945,10 @@ class App:
         canvas = self.maze_canvas
         canvas.delete("all")
         memory = self.controller.maze
-        recommendation = self.controller.boss_direction or memory.recommendation()
+        recommendation = self.controller.boss_direction or memory.recommended_action(
+            self.controller._teleporter_ready("place"),
+            self.controller._teleporter_ready("return"),
+        )
         current_x, current_y = memory.position
         recommended_cell = None
         offsets = {
@@ -892,6 +993,24 @@ class App:
                             cx, cy, cx + dx * 16, cy + dy * 16,
                             fill="#1565c0", width=3
                         )
+                if (x, y) == memory.teleporter_position:
+                    canvas.create_text(
+                        left + size - 4,
+                        top + 3,
+                        anchor="ne",
+                        text="T",
+                        fill="#6a1b9a",
+                        font=("", 10, "bold"),
+                    )
+                if (x, y) == memory.boss_position:
+                    canvas.create_text(
+                        left + 4,
+                        top + size - 3,
+                        anchor="sw",
+                        text="B",
+                        fill="#b71c1c",
+                        font=("", 10, "bold"),
+                    )
         current_tile = memory.tiles.get(memory.position)
         current_layout = (
             (
@@ -910,6 +1029,8 @@ class App:
             f"{' (BOSS)' if self.controller.boss_direction else ''}  "
             f"Layout: {current_layout}  "
             f"Explored tiles: {len(memory.tiles)}  "
+            f"Teleporter: {memory.teleporter_position or 'not placed'}  "
+            f"Boss tile: {memory.boss_position or 'unknown'}  "
             f"Submitted layouts: {len(self.controller.tile_layouts.layouts)}\n"
             f"{self.controller.maze_transition_status}\n"
             f"{self.controller.boss_status}\n"
