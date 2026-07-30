@@ -1,0 +1,671 @@
+from __future__ import annotations
+
+import ctypes
+import threading
+import time
+from collections.abc import Callable
+
+import cv2
+import mss
+import numpy as np
+from pynput import keyboard, mouse
+
+from .config import Config
+from .maze import MazeMemory, OPPOSITE
+from .models import Decision, Mode, Point
+from .policy import ContextPolicy, TileLayoutDictionary
+from .vision import BossDetector, StateDetector
+
+
+class BotController:
+    def __init__(
+        self,
+        config: Config,
+        on_update: Callable[[Decision], None],
+        on_emergency_stop: Callable[[], None],
+        on_training_event: Callable[[str], None] | None = None,
+        on_maze_update: Callable[[], None] | None = None,
+        on_mode_hotkey: Callable[[Mode], None] | None = None,
+        on_binding_captured: Callable[[Mode, str], None] | None = None,
+    ) -> None:
+        self.config = config
+        self.on_update = on_update
+        self.on_emergency_stop = on_emergency_stop
+        self.on_training_event = on_training_event or (lambda _message: None)
+        self.on_maze_update = on_maze_update or (lambda: None)
+        self.on_mode_hotkey = on_mode_hotkey or self.set_mode
+        self.on_binding_captured = on_binding_captured or (
+            lambda _mode, _binding: None
+        )
+        self.mode = Mode.IDLE
+        self.maze = MazeMemory()
+        self.detector = StateDetector(
+            config.data["templates"], config.data["confidence_threshold"]
+        )
+        self.boss_detector = BossDetector(
+            config.data.get("boss_template"),
+            float(config.data.get("boss_match_threshold", 0.82)),
+        )
+        self.boss_status = (
+            "Boss detector ready; waiting for exploration"
+            if self.boss_detector.template is not None
+            else "Boss detector not configured"
+        )
+        self.boss_direction: str | None = None
+        self.policy = ContextPolicy()
+        self.tile_layouts = TileLayoutDictionary()
+        self.layout_status = self.tile_layouts.last_match_status
+        self.training_enabled = False
+        self._latest_learning: tuple[str, np.ndarray, int, int] | None = None
+        self._learning_lock = threading.Lock()
+        self._binding_lock = threading.Lock()
+        self._binding_capture_mode: Mode | None = None
+        self._last_live_click = 0.0
+        self._latest_edge_signatures: dict[str, np.ndarray] = {}
+        self._previous_edge_signatures: dict[str, np.ndarray] = {}
+        self._scene_edge_reference: dict[str, np.ndarray] = {}
+        self._reference_stable_count = 0
+        self._pending_maze_move: str | None = None
+        self._pending_maze_move_started_at: float | None = None
+        self._transition_frame = 0
+        self._entry_appearance_seen = False
+        self._entry_stable_count = 0
+        self.maze_transition_status = "No pending room transition"
+        self._latest_tile_layout_signature: str | None = None
+        self._latest_tile_layout_descriptor: np.ndarray | None = None
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._listener = keyboard.Listener(on_press=self._on_key)
+        self._mouse_listener = mouse.Listener(on_click=self._on_mouse_click)
+
+    def start(self) -> None:
+        self._listener.start()
+        self._mouse_listener.start()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def shutdown(self) -> None:
+        self.mode = Mode.IDLE
+        self._stop.set()
+        self._listener.stop()
+        self._mouse_listener.stop()
+
+    def set_mode(self, mode: Mode) -> None:
+        self.mode = mode
+
+    def set_training_enabled(self, enabled: bool) -> None:
+        self.training_enabled = enabled
+
+    def begin_binding_capture(self, mode: Mode) -> None:
+        with self._binding_lock:
+            self._binding_capture_mode = mode
+
+    def cancel_binding_capture(self) -> None:
+        with self._binding_lock:
+            self._binding_capture_mode = None
+
+    @staticmethod
+    def _mouse_binding(button) -> str:
+        name = getattr(button, "name", None)
+        return f"mouse:{name or str(button).removeprefix('Button.')}".lower()
+
+    @staticmethod
+    def _key_binding(key: keyboard.Key | keyboard.KeyCode | None) -> str | None:
+        if key is None:
+            return None
+        if isinstance(key, keyboard.KeyCode):
+            if key.char:
+                return f"key:{key.char.lower()}"
+            return f"key:vk_{key.vk}" if key.vk is not None else None
+        name = getattr(key, "name", None)
+        return f"key:{name}".lower() if name else None
+
+    def _capture_or_activate_binding(self, binding: str) -> bool:
+        with self._binding_lock:
+            capture_mode = self._binding_capture_mode
+            if capture_mode is not None:
+                self._binding_capture_mode = None
+        if capture_mode is not None:
+            self.config.set_mode_binding(capture_mode.value, binding)
+            self.on_binding_captured(capture_mode, binding)
+            return True
+        bindings = self.config.data.get("mode_bindings", {})
+        for mode in (Mode.TRAINING, Mode.LIVE):
+            if bindings.get(mode.value) == binding:
+                self.on_mode_hotkey(mode)
+                return True
+        return False
+
+    def submit_tile_layout(self, exits: set[str]) -> None:
+        signature = self._latest_tile_layout_signature
+        if signature is None:
+            self.on_training_event(
+                "Tile layout not submitted: all four passage regions are required"
+            )
+            return
+        layout_id, created = self.tile_layouts.submit(
+            signature, exits, self._latest_tile_layout_descriptor
+        )
+        stored_exits = self.tile_layouts.exits_for(layout_id)
+        linked = self.maze.update_linked_layout(layout_id, stored_exits)
+        self.maze.link_layout(layout_id, stored_exits, provisional=False)
+        action = "Added" if created else "Updated"
+        self.on_training_event(
+            f"{action} {layout_id}; linked current tile and "
+            f"updated {linked} previously linked tile(s)"
+        )
+        self.on_maze_update()
+
+    def confirm_maze_exits(self, exits: set[str]) -> None:
+        if self._latest_tile_layout_signature is not None:
+            self.submit_tile_layout(exits)
+        else:
+            self.maze.confirm_exits(exits)
+            self.on_training_event(
+                "Saved exits to current tile without a layout link "
+                "(no current passage signature)"
+            )
+            self.on_maze_update()
+
+    def reset_maze(self) -> None:
+        self.maze.reset()
+        self._clear_pending_move()
+        self._previous_ground_grid = None
+        self._latest_ground_grid = None
+        self._ground_volatility = None
+        self.maze_transition_status = "No pending room transition"
+        self.on_maze_update()
+
+    def set_maze_position(self, x: int, y: int) -> None:
+        self.maze.set_position(x, y)
+        self._clear_pending_move()
+        self.maze_transition_status = f"Location manually set to ({x}, {y})"
+        self.on_maze_update()
+
+    @property
+    def movement_pending(self) -> bool:
+        return self._pending_maze_move is not None
+
+    def _on_mouse_click(self, x: int, y: int, button, pressed: bool) -> None:
+        if not pressed:
+            return
+        if self._capture_or_activate_binding(self._mouse_binding(button)):
+            return
+        if self.mode != Mode.TRAINING:
+            return
+        with self._learning_lock:
+            learning = self._latest_learning
+        if learning is None:
+            return
+        state, context, action_count, predicted = learning
+        zones = self.config.click_zones.get(state, [])
+        point = Point(int(x), int(y))
+        actual = next(
+            (index for index, zone in enumerate(zones) if zone.contains(point)), None
+        )
+        if actual is None or action_count != len(zones):
+            return
+        if state == "exploring":
+            direction = self.config.click_zone_name(state, actual).lower()
+            if direction in {"north", "east", "south", "west"}:
+                self.maze.observe({direction})
+                self._start_pending_move(direction)
+                self.on_maze_update()
+        if not self.training_enabled:
+            return
+        reward = self.policy.train(state, context, action_count, predicted, actual)
+        accuracy = self.policy.matches / max(1, self.policy.examples)
+        self.on_training_event(
+            f"Reward {reward}: predicted zone {predicted + 1}, "
+            f"clicked zone {actual + 1} ({accuracy:.0%} match rate)"
+        )
+
+    def _on_key(self, key: keyboard.Key | keyboard.KeyCode | None) -> None:
+        if key == keyboard.Key.esc:
+            self.cancel_binding_capture()
+            self.mode = Mode.IDLE
+            self.on_emergency_stop()
+            return
+        binding = self._key_binding(key)
+        if binding is not None:
+            self._capture_or_activate_binding(binding)
+
+    def _loop(self) -> None:
+        with mss.mss() as capture:
+            monitor_number = int(self.config.data["monitor"])
+            if monitor_number >= len(capture.monitors):
+                monitor_number = 1
+            monitor = capture.monitors[monitor_number]
+            next_decision = 0.0
+            while not self._stop.is_set():
+                if self.mode == Mode.IDLE:
+                    next_decision = 0.0
+                    time.sleep(0.1)
+                    continue
+                raw = np.asarray(capture.grab(monitor))
+                frame = cv2.cvtColor(raw, cv2.COLOR_BGRA2BGR)
+                state, confidence = self.detector.detect(frame, self.config.regions)
+                now = time.monotonic()
+                decision_due = now >= next_decision
+                self._track_maze_transition(
+                    state, frame, observe_layout=decision_due
+                )
+                if decision_due:
+                    decision = self._decide(state, confidence, frame)
+                    self.on_update(decision)
+                    if (
+                        self.mode == Mode.LIVE
+                        and decision.point
+                        and not (
+                            decision.state_name == "exploring"
+                            and self.movement_pending
+                        )
+                        and now - self._last_live_click >= 1.5
+                    ):
+                        self._safe_click(decision)
+                        self._last_live_click = time.monotonic()
+                    next_decision = now + float(self.config.data["tick_seconds"])
+                time.sleep(
+                    max(
+                        0.02,
+                        float(
+                            self.config.data.get(
+                                "transition_sample_seconds", 0.1
+                            )
+                        ),
+                    )
+                )
+
+    def _ground_grid_signature(self, frame: np.ndarray) -> np.ndarray | None:
+        region = self.config.visual_regions.get("exploring", {}).get(
+            "walkable_ground"
+        )
+        if region is None:
+            return None
+        height, width = frame.shape[:2]
+        left, top = max(0, region.left), max(0, region.top)
+        right = min(width, region.left + region.width)
+        bottom = min(height, region.top + region.height)
+        crop = frame[top:bottom, left:right]
+        if crop.size == 0:
+            return None
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        columns = max(2, int(self.config.data.get("walkable_grid_columns", 12)))
+        rows = max(2, int(self.config.data.get("walkable_grid_rows", 8)))
+        reduced = cv2.resize(
+            gray, (columns * 8, rows * 8), interpolation=cv2.INTER_AREA
+        ).astype(np.float32) / 255.0
+        return reduced.reshape(rows, 8, columns, 8).transpose(0, 2, 1, 3)
+
+    @staticmethod
+    def _change_components(mask: np.ndarray) -> tuple[int, int]:
+        points = [tuple(point) for point in np.argwhere(mask)]
+        if not points:
+            return 0, 0
+        remaining = set(points)
+        components = 0
+        while remaining:
+            components += 1
+            stack = [remaining.pop()]
+            while stack:
+                row, column = stack.pop()
+                neighbors = {
+                    (row + dr, column + dc)
+                    for dr in (-1, 0, 1)
+                    for dc in (-1, 0, 1)
+                    if dr or dc
+                }
+                connected = neighbors & remaining
+                remaining.difference_update(connected)
+                stack.extend(connected)
+        span = max(
+            abs(first[0] - second[0]) + abs(first[1] - second[1])
+            for first in points
+            for second in points
+        )
+        return components, span
+
+    def _clear_pending_move(self) -> None:
+        self._pending_maze_move = None
+        self._pending_maze_move_started_at = None
+        self._transition_frame = 0
+        self._transition_candidate = False
+        self._transition_stable_count = 0
+
+    def _start_pending_move(self, direction: str) -> None:
+        if self._latest_ground_grid is None:
+            self.maze_transition_status = (
+                f"Cannot track {direction}: set the walkable_ground region"
+            )
+            return
+        self._pending_maze_move = direction
+        self._pending_maze_move_started_at = time.monotonic()
+        self._transition_frame = 0
+        self._transition_candidate = False
+        self._transition_stable_count = 0
+        self._previous_ground_grid = self._latest_ground_grid.copy()
+        self.maze_transition_status = (
+            f"Pending {direction}; watching walkable-ground chunk changes"
+        )
+
+    def _track_maze_transition(
+        self, state: str, frame: np.ndarray, observe_layout: bool = True
+    ) -> None:
+        if self._pending_maze_move is not None:
+            timeout = max(
+                1.0,
+                float(
+                    self.config.data.get(
+                        "transition_pending_timeout_seconds", 12.0
+                    )
+                ),
+            )
+            started_at = self._pending_maze_move_started_at
+            if started_at is not None and time.monotonic() - started_at >= timeout:
+                direction = self._pending_maze_move
+                self._clear_pending_move()
+                self.maze_transition_status = (
+                    f"Pending {direction} expired after {timeout:g}s; "
+                    "exploration clicks re-enabled"
+                )
+                self.on_maze_update()
+        if state == "combat":
+            # An encounter interrupts movement; combat resolves on the same tile.
+            if self._pending_maze_move is not None:
+                self._clear_pending_move()
+                self.maze_transition_status = "Pending move canceled by combat"
+                self.on_maze_update()
+            return
+        if state != "exploring":
+            return
+        grid = self._ground_grid_signature(frame)
+        if grid is None:
+            if self._pending_maze_move is not None:
+                self.maze_transition_status = (
+                    "Pending move cannot be checked: set walkable_ground"
+                )
+            return
+        self._latest_ground_grid = grid
+        previous = self._previous_ground_grid
+        self._previous_ground_grid = grid.copy()
+        if previous is None or previous.shape != grid.shape:
+            self._ground_volatility = np.zeros(grid.shape[:2], dtype=np.float32)
+            return
+        differences = np.mean(np.abs(grid - previous), axis=(2, 3))
+        threshold = float(
+            self.config.data.get("walkable_chunk_difference_threshold", 0.06)
+        )
+        raw_changed = differences >= threshold
+        if self._pending_maze_move is None:
+            if (
+                self._ground_volatility is None
+                or self._ground_volatility.shape != raw_changed.shape
+            ):
+                self._ground_volatility = np.zeros(
+                    raw_changed.shape, dtype=np.float32
+                )
+            self._ground_volatility = (
+                self._ground_volatility * 0.95
+                + raw_changed.astype(np.float32) * 0.05
+            )
+            if observe_layout:
+                self._observe_visual_exits(frame)
+            return
+        direction = self._pending_maze_move
+        self._transition_frame += 1
+        volatility_threshold = float(
+            self.config.data.get("walkable_volatility_ignore_threshold", 0.35)
+        )
+        ignored = (
+            self._ground_volatility >= volatility_threshold
+            if self._ground_volatility is not None
+            else np.zeros(raw_changed.shape, dtype=bool)
+        )
+        changed = raw_changed & ~ignored
+        changed_count = int(np.count_nonzero(changed))
+        usable_count = max(1, int(changed.size - np.count_nonzero(ignored)))
+        changed_fraction = changed_count / usable_count
+        components, span = self._change_components(changed)
+        minimum_chunks = max(
+            2, int(self.config.data.get("walkable_nonadjacent_min_chunks", 3))
+        )
+        minimum_span = max(
+            2, int(self.config.data.get("walkable_nonadjacent_span", 4))
+        )
+        widespread_threshold = float(
+            self.config.data.get("walkable_widespread_fraction", 0.25)
+        )
+        nonadjacent = (
+            changed_count >= minimum_chunks
+            and components >= 2
+            and span >= minimum_span
+        )
+        widespread = changed_fraction >= widespread_threshold
+        if nonadjacent or widespread:
+            self._transition_candidate = True
+            self._transition_stable_count = 0
+        elif self._transition_candidate:
+            stable_threshold = float(
+                self.config.data.get("walkable_stable_fraction", 0.03)
+            )
+            if changed_fraction <= stable_threshold:
+                self._transition_stable_count += 1
+            else:
+                self._transition_stable_count = 0
+        stable_required = max(
+            1, int(self.config.data.get("walkable_stable_frames", 2))
+        )
+        self.maze_transition_status = (
+            f"Pending {direction}; chunks {changed_count}/{usable_count}, "
+            f"groups {components}, span {span}; "
+            f"{'scene change seen' if self._transition_candidate else 'walking'}"
+            f"; stable {self._transition_stable_count}/{stable_required}"
+        )
+        if self._transition_frame % 3 == 0:
+            self.on_maze_update()
+        if (
+            self._transition_candidate
+            and self._transition_stable_count >= stable_required
+        ):
+            self._commit_maze_move(
+                direction,
+                "non-adjacent/widespread ground chunks changed, then stabilized",
+            )
+            self._observe_visual_exits(frame)
+
+    def _commit_maze_move(self, direction: str, evidence: str) -> None:
+        self.maze.moved(direction)
+        self._clear_pending_move()
+        self.maze_transition_status = (
+            f"Room transition confirmed: moved {direction} ({evidence})"
+        )
+        self.on_maze_update()
+
+    def _observe_visual_exits(self, frame: np.ndarray) -> None:
+        regions = self.config.visual_regions.get("exploring", {})
+        signature = self.tile_layouts.signature(frame, regions)
+        descriptor = self.tile_layouts.descriptor(frame, regions)
+        self._latest_tile_layout_signature = signature
+        self._latest_tile_layout_descriptor = descriptor
+        if signature is None or descriptor is None:
+            self.layout_status = "Layout identity needs all four passage regions"
+            return
+        predicted_exits, _confidence, layout_id = self.tile_layouts.match(signature)
+        provisional = False
+        if predicted_exits is None:
+            predicted_exits, _difference, layout_id = self.tile_layouts.nearest(
+                descriptor
+            )
+            provisional = predicted_exits is not None
+        self.layout_status = self.tile_layouts.last_match_status
+        if predicted_exits is None:
+            return
+        x, y = self.maze.position
+        in_bounds = {
+            "north": y > 0,
+            "east": x < 9,
+            "south": y < 9,
+            "west": x > 0,
+        }
+        predicted_exits = {
+            direction for direction in predicted_exits if in_bounds.get(direction, False)
+        }
+        if layout_id is not None:
+            before = set(self.maze.tiles.get(self.maze.position, ()).exits) if (
+                self.maze.position in self.maze.tiles
+            ) else set()
+            previous_tile = self.maze.tiles.get(self.maze.position)
+            previous_link = (
+                previous_tile.layout_id,
+                previous_tile.layout_provisional,
+            ) if previous_tile else (None, False)
+            self.maze.link_layout(
+                layout_id, predicted_exits, provisional=provisional
+            )
+            if predicted_exits - before or previous_link != (layout_id, provisional):
+                self.on_maze_update()
+
+    def _decide(
+        self, state: str, confidence: float, frame: np.ndarray
+    ) -> Decision:
+        if state == "lobby" and self.config.lobby_start_point:
+            self.maze.reset()
+            self._clear_pending_move()
+            self._previous_ground_grid = None
+            self._latest_ground_grid = None
+            self._ground_volatility = None
+            self.maze_transition_status = "Maze reset in lobby"
+            self.on_maze_update()
+            return Decision(
+                state, self.config.lobby_start_point, "Start quest", confidence
+            )
+        zones = self.config.click_zones.get(state, [])
+        visual_regions = self.config.visual_regions.get(state, {})
+        if state != "unknown" and zones:
+            context = self.policy.features(frame, visual_regions)
+            index, probability = self.policy.predict(state, context, len(zones))
+            boss_score = 0.0
+            boss_direction: str | None = None
+            if state == "exploring":
+                previous_boss_status = self.boss_status
+                search_area = visual_regions.get("boss_search_area")
+                boss_center, boss_score = self.boss_detector.detect(frame, search_area)
+                if boss_center is not None and search_area is not None:
+                    boss_direction = "mid"
+                    self.boss_direction = boss_direction
+                    boss_index = self._zone_index_named(state, boss_direction)
+                    if boss_index is not None:
+                        index = boss_index
+                    self.maze.observe(
+                        {boss_direction} if boss_direction in {
+                            "north", "east", "south", "west"
+                        } else set(),
+                        tile_type="boss",
+                    )
+                    self.boss_status = (
+                        f"Boss detected ({boss_score:.0%}); prioritize {boss_direction}"
+                    )
+                else:
+                    self.boss_direction = None
+                    self.boss_status = (
+                        f"Boss not detected (best match {boss_score:.0%})"
+                        if search_area is not None and self.boss_detector.template is not None
+                        else "Boss detection needs boss sprite and boss_search_area"
+                    )
+                if self.boss_status != previous_boss_status:
+                    self.on_maze_update()
+            zone = zones[index]
+            point = Point(zone.left + zone.width // 2, zone.top + zone.height // 2)
+            with self._learning_lock:
+                self._latest_learning = (
+                    state,
+                    context.copy(),
+                    len(zones),
+                    index,
+                )
+            name = self.config.click_zone_name(state, index)
+            recommendation = self.maze.recommendation() if state == "exploring" else None
+            if state == "exploring":
+                selected_name = "mid" if boss_direction else recommendation
+                selected_index = self._zone_index_named(state, selected_name)
+                if selected_index is not None:
+                    index = selected_index
+                    zone = zones[index]
+                    point = Point(
+                        zone.left + zone.width // 2,
+                        zone.top + zone.height // 2,
+                    )
+                    name = self.config.click_zone_name(state, index)
+                    with self._learning_lock:
+                        self._latest_learning = (
+                            state,
+                            context.copy(),
+                            len(zones),
+                            index,
+                        )
+            reason = f"Policy {name} ({probability:.0%})"
+            if boss_direction:
+                reason = f"BOSS {boss_score:.0%}: move mid"
+            elif recommendation:
+                reason = f"Maze recommendation: {recommendation}"
+            return Decision(
+                state,
+                point,
+                reason,
+                confidence,
+                {
+                    "zone_index": index,
+                    "policy_confidence": probability,
+                    "boss_score": boss_score,
+                    "boss_direction": boss_direction,
+                },
+            )
+        with self._learning_lock:
+            self._latest_learning = None
+        return Decision(state, reason="No action configured", confidence=confidence)
+
+    def _zone_index_named(self, state: str, name: str | None) -> int | None:
+        if name is None:
+            return None
+        zones = self.config.click_zones.get(state, [])
+        for index in range(len(zones)):
+            if self.config.click_zone_name(state, index).lower() == name:
+                return index
+        return None
+
+    def _safe_click(self, decision: Decision) -> bool:
+        point = decision.point
+        if (
+            point is None
+            or self.mode != Mode.LIVE
+            or (
+                decision.state_name == "exploring"
+                and self.movement_pending
+            )
+        ):
+            return False
+        allowed = self.config.click_zones.get(decision.state_name, [])
+        if not any(zone.contains(point) for zone in allowed):
+            self.on_update(
+                Decision(
+                    decision.state,
+                    reason="Blocked: target is outside configured click zones",
+                    confidence=decision.confidence,
+                )
+            )
+            return False
+        # Check the mode again immediately before the OS-level click.
+        if self.mode != Mode.LIVE:
+            return False
+        if decision.state_name == "exploring":
+            index = decision.details.get("zone_index")
+            if isinstance(index, int):
+                direction = self.config.click_zone_name("exploring", index).lower()
+                if direction in {"north", "east", "south", "west"}:
+                    self.maze.observe({direction})
+                    self._start_pending_move(direction)
+                    self.on_maze_update()
+        ctypes.windll.user32.SetCursorPos(point.x, point.y)
+        ctypes.windll.user32.mouse_event(0x0002, 0, 0, 0, 0)
+        ctypes.windll.user32.mouse_event(0x0004, 0, 0, 0, 0)
+        return True

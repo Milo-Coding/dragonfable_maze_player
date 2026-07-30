@@ -1,0 +1,24 @@
+{
+  "monitor": 1,
+  "tick_seconds": 0.5,
+  "confidence_threshold": 0.82,
+  "boss_template": null,
+  "boss_match_threshold": 0.82,
+  "transition_pending_timeout_seconds": 10.0,
+  "transition_sample_seconds": 0.1,
+  "transition_edge_appearance_difference": 0.04,
+  "transition_edge_stability_difference": 0.01,
+  "transition_edge_stable_frames": 3,
+  "mode_bindings": {
+    "training": "mouse:x1",
+    "live": "mouse:x2"
+  },
+  "states": ["menu", "lobby", "exploring", "combat"],
+  "regions": {},
+  "visual_regions": {},
+  "click_zones": {},
+  "click_zone_names": {},
+  "anchor_names": {},
+  "templates": {},
+  "lobby_start_point": null
+}
