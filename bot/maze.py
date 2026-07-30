@@ -100,12 +100,13 @@ class MazeMemory:
     def recommendation(self) -> str | None:
         return self.choose_exit()
 
-    def moved(self, direction: str) -> None:
+    def moved(self, direction: str) -> bool:
         current = self.tiles.setdefault(self.position, Tile())
-        current.tried.add(direction)
         dx, dy = DIRECTIONS[direction]
         next_position = (self.position[0] + dx, self.position[1] + dy)
         if not (0 <= next_position[0] < 10 and 0 <= next_position[1] < 10):
-            return
+            return False
+        current.tried.add(direction)
         self.position = next_position
         self.tiles.setdefault(next_position, Tile()).tried.add(OPPOSITE[direction])
+        return True

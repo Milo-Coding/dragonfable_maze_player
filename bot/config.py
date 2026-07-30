@@ -22,11 +22,16 @@ DEFAULTS = {
     "anchor_names": {},
     "boss_template": None,
     "boss_match_threshold": 0.82,
+    "player_templates": [],
+    "player_match_threshold": 0.78,
     "transition_pending_timeout_seconds": 10.0,
     "transition_sample_seconds": 0.1,
-    "transition_edge_appearance_difference": 0.04,
+    "transition_edge_activity_difference": 0.02,
     "transition_edge_stability_difference": 0.01,
     "transition_edge_stable_frames": 3,
+    "transition_minimum_changed_regions": 2,
+    "transition_whole_scene_activity_difference": 0.012,
+    "transition_whole_scene_stability_difference": 0.006,
     "mode_bindings": {
         "training": "mouse:x1",
         "live": "mouse:x2",
@@ -62,6 +67,9 @@ class Config:
             if old in exploring and new not in exploring:
                 exploring[new] = exploring.pop(old)
                 changed = True
+        if "walkable_ground" in exploring:
+            exploring.pop("walkable_ground")
+            changed = True
         for key in (
             "room_transition_threshold",
             "room_transition_delay_seconds",
@@ -81,7 +89,6 @@ class Config:
             "walkable_stable_fraction",
             "walkable_stable_frames",
             "walkable_volatility_ignore_threshold",
-            "player_match_threshold",
             "tile_layout_match_distance",
             "tile_layout_duplicate_distance",
             "tile_layout_ambiguity_margin",

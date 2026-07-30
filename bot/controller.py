@@ -11,10 +11,16 @@ import numpy as np
 from pynput import keyboard, mouse
 
 from .config import Config
-from .maze import MazeMemory, OPPOSITE
+from .maze import MazeMemory
 from .models import Decision, Mode, Point
 from .policy import ContextPolicy, TileLayoutDictionary
-from .vision import BossDetector, StateDetector
+from .vision import (
+    BossDetector,
+    PlayerDetector,
+    SceneTransitionDetector,
+    StateDetector,
+    WholeSceneMotionDetector,
+)
 
 
 class BotController:
@@ -46,6 +52,10 @@ class BotController:
             config.data.get("boss_template"),
             float(config.data.get("boss_match_threshold", 0.82)),
         )
+        self.player_detector = PlayerDetector(
+            config.data.get("player_templates", []),
+            float(config.data.get("player_match_threshold", 0.78)),
+        )
         self.boss_status = (
             "Boss detector ready; waiting for exploration"
             if self.boss_detector.template is not None
@@ -62,14 +72,23 @@ class BotController:
         self._binding_capture_mode: Mode | None = None
         self._last_live_click = 0.0
         self._latest_edge_signatures: dict[str, np.ndarray] = {}
-        self._previous_edge_signatures: dict[str, np.ndarray] = {}
-        self._scene_edge_reference: dict[str, np.ndarray] = {}
-        self._reference_stable_count = 0
         self._pending_maze_move: str | None = None
         self._pending_maze_move_started_at: float | None = None
         self._transition_frame = 0
-        self._entry_appearance_seen = False
-        self._entry_stable_count = 0
+        self._transition_activity_seen = False
+        self._edges_stable_count = 0
+        self._scene_transition = SceneTransitionDetector(
+            config.data.get("transition_edge_activity_difference", 0.02),
+            config.data.get("transition_edge_stability_difference", 0.01),
+            config.data.get("transition_edge_stable_frames", 3),
+            config.data.get("transition_minimum_changed_regions", 2),
+        )
+        self._whole_scene_transition = WholeSceneMotionDetector(
+            config.data.get("transition_whole_scene_activity_difference", 0.012),
+            config.data.get("transition_whole_scene_stability_difference", 0.006),
+            config.data.get("transition_edge_stable_frames", 3),
+        )
+        self._latest_whole_scene_signature: np.ndarray | None = None
         self.maze_transition_status = "No pending room transition"
         self._latest_tile_layout_signature: str | None = None
         self._latest_tile_layout_descriptor: np.ndarray | None = None
@@ -170,9 +189,7 @@ class BotController:
     def reset_maze(self) -> None:
         self.maze.reset()
         self._clear_pending_move()
-        self._previous_ground_grid = None
-        self._latest_ground_grid = None
-        self._ground_volatility = None
+        self._latest_edge_signatures = {}
         self.maze_transition_status = "No pending room transition"
         self.on_maze_update()
 
@@ -276,12 +293,8 @@ class BotController:
                     )
                 )
 
-    def _ground_grid_signature(self, frame: np.ndarray) -> np.ndarray | None:
-        region = self.config.visual_regions.get("exploring", {}).get(
-            "walkable_ground"
-        )
-        if region is None:
-            return None
+    @staticmethod
+    def _edge_signature(frame: np.ndarray, region) -> np.ndarray | None:
         height, width = frame.shape[:2]
         left, top = max(0, region.left), max(0, region.top)
         right = min(width, region.left + region.width)
@@ -290,63 +303,72 @@ class BotController:
         if crop.size == 0:
             return None
         gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-        columns = max(2, int(self.config.data.get("walkable_grid_columns", 12)))
-        rows = max(2, int(self.config.data.get("walkable_grid_rows", 8)))
-        reduced = cv2.resize(
-            gray, (columns * 8, rows * 8), interpolation=cv2.INTER_AREA
-        ).astype(np.float32) / 255.0
-        return reduced.reshape(rows, 8, columns, 8).transpose(0, 2, 1, 3)
+        return cv2.resize(gray, (48, 48), interpolation=cv2.INTER_AREA).astype(
+            np.float32
+        ) / 255.0
 
-    @staticmethod
-    def _change_components(mask: np.ndarray) -> tuple[int, int]:
-        points = [tuple(point) for point in np.argwhere(mask)]
-        if not points:
-            return 0, 0
-        remaining = set(points)
-        components = 0
-        while remaining:
-            components += 1
-            stack = [remaining.pop()]
-            while stack:
-                row, column = stack.pop()
-                neighbors = {
-                    (row + dr, column + dc)
-                    for dr in (-1, 0, 1)
-                    for dc in (-1, 0, 1)
-                    if dr or dc
-                }
-                connected = neighbors & remaining
-                remaining.difference_update(connected)
-                stack.extend(connected)
-        span = max(
-            abs(first[0] - second[0]) + abs(first[1] - second[1])
-            for first in points
-            for second in points
-        )
-        return components, span
+    def _edge_signatures(self, frame: np.ndarray) -> dict[str, np.ndarray]:
+        regions = self.config.visual_regions.get("exploring", {})
+        signatures: dict[str, np.ndarray] = {}
+        for direction in ("north", "south", "east", "west"):
+            region = regions.get(f"scene_change_{direction}")
+            if region is None:
+                continue
+            signature = self._edge_signature(frame, region)
+            if signature is not None:
+                signatures[direction] = signature
+        return signatures
+
+    def _whole_scene_signature(self, frame: np.ndarray) -> np.ndarray | None:
+        regions = self.config.visual_regions.get("exploring", {})
+        edges = [
+            regions.get(f"scene_change_{direction}")
+            for direction in ("north", "south", "east", "west")
+        ]
+        edges = [region for region in edges if region is not None]
+        if not edges:
+            return None
+        height, width = frame.shape[:2]
+        left = max(0, min(region.left for region in edges))
+        top = max(0, min(region.top for region in edges))
+        right = min(width, max(region.left + region.width for region in edges))
+        bottom = min(height, max(region.top + region.height for region in edges))
+        crop = frame[top:bottom, left:right]
+        if crop.size == 0:
+            return None
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        gray = cv2.GaussianBlur(gray, (5, 5), 0)
+        return cv2.resize(gray, (96, 64), interpolation=cv2.INTER_AREA).astype(
+            np.float32
+        ) / 255.0
 
     def _clear_pending_move(self) -> None:
         self._pending_maze_move = None
         self._pending_maze_move_started_at = None
         self._transition_frame = 0
-        self._transition_candidate = False
-        self._transition_stable_count = 0
+        self._transition_activity_seen = False
+        self._edges_stable_count = 0
+        self._scene_transition.reset()
+        self._whole_scene_transition.reset()
 
-    def _start_pending_move(self, direction: str) -> None:
-        if self._latest_ground_grid is None:
+    def _start_pending_move(self, direction: str) -> bool:
+        if len(self._latest_edge_signatures) != 4:
+            missing = 4 - len(self._latest_edge_signatures)
             self.maze_transition_status = (
-                f"Cannot track {direction}: set the walkable_ground region"
+                f"Cannot track {direction}: {missing} directional edge region(s) missing"
             )
-            return
+            return False
         self._pending_maze_move = direction
         self._pending_maze_move_started_at = time.monotonic()
         self._transition_frame = 0
-        self._transition_candidate = False
-        self._transition_stable_count = 0
-        self._previous_ground_grid = self._latest_ground_grid.copy()
+        self._transition_activity_seen = False
+        self._edges_stable_count = 0
+        self._scene_transition.reset(self._latest_edge_signatures)
+        self._whole_scene_transition.reset(self._latest_whole_scene_signature)
         self.maze_transition_status = (
-            f"Pending {direction}; watching walkable-ground chunk changes"
+            f"Pending {direction}; waiting for a changed scene to settle"
         )
+        return True
 
     def _track_maze_transition(
         self, state: str, frame: np.ndarray, observe_layout: bool = True
@@ -356,7 +378,7 @@ class BotController:
                 1.0,
                 float(
                     self.config.data.get(
-                        "transition_pending_timeout_seconds", 12.0
+                        "transition_pending_timeout_seconds", 10.0
                     )
                 ),
             )
@@ -378,106 +400,68 @@ class BotController:
             return
         if state != "exploring":
             return
-        grid = self._ground_grid_signature(frame)
-        if grid is None:
+        signatures = self._edge_signatures(frame)
+        whole_scene = self._whole_scene_signature(frame)
+        self._latest_whole_scene_signature = whole_scene
+        if len(signatures) != 4:
             if self._pending_maze_move is not None:
+                missing = 4 - len(signatures)
                 self.maze_transition_status = (
-                    "Pending move cannot be checked: set walkable_ground"
+                    f"Pending move cannot be checked: {missing} directional "
+                    "edge region(s) missing"
                 )
             return
-        self._latest_ground_grid = grid
-        previous = self._previous_ground_grid
-        self._previous_ground_grid = grid.copy()
-        if previous is None or previous.shape != grid.shape:
-            self._ground_volatility = np.zeros(grid.shape[:2], dtype=np.float32)
-            return
-        differences = np.mean(np.abs(grid - previous), axis=(2, 3))
-        threshold = float(
-            self.config.data.get("walkable_chunk_difference_threshold", 0.06)
-        )
-        raw_changed = differences >= threshold
+        self._latest_edge_signatures = signatures
         if self._pending_maze_move is None:
-            if (
-                self._ground_volatility is None
-                or self._ground_volatility.shape != raw_changed.shape
-            ):
-                self._ground_volatility = np.zeros(
-                    raw_changed.shape, dtype=np.float32
-                )
-            self._ground_volatility = (
-                self._ground_volatility * 0.95
-                + raw_changed.astype(np.float32) * 0.05
-            )
             if observe_layout:
                 self._observe_visual_exits(frame)
             return
-        direction = self._pending_maze_move
+        selected_direction = self._pending_maze_move
         self._transition_frame += 1
-        volatility_threshold = float(
-            self.config.data.get("walkable_volatility_ignore_threshold", 0.35)
+        transition_complete = self._scene_transition.update(signatures)
+        identical_transition_complete = self._whole_scene_transition.update(
+            whole_scene
         )
-        ignored = (
-            self._ground_volatility >= volatility_threshold
-            if self._ground_volatility is not None
-            else np.zeros(raw_changed.shape, dtype=bool)
-        )
-        changed = raw_changed & ~ignored
-        changed_count = int(np.count_nonzero(changed))
-        usable_count = max(1, int(changed.size - np.count_nonzero(ignored)))
-        changed_fraction = changed_count / usable_count
-        components, span = self._change_components(changed)
-        minimum_chunks = max(
-            2, int(self.config.data.get("walkable_nonadjacent_min_chunks", 3))
-        )
-        minimum_span = max(
-            2, int(self.config.data.get("walkable_nonadjacent_span", 4))
-        )
-        widespread_threshold = float(
-            self.config.data.get("walkable_widespread_fraction", 0.25)
-        )
-        nonadjacent = (
-            changed_count >= minimum_chunks
-            and components >= 2
-            and span >= minimum_span
-        )
-        widespread = changed_fraction >= widespread_threshold
-        if nonadjacent or widespread:
-            self._transition_candidate = True
-            self._transition_stable_count = 0
-        elif self._transition_candidate:
-            stable_threshold = float(
-                self.config.data.get("walkable_stable_fraction", 0.03)
-            )
-            if changed_fraction <= stable_threshold:
-                self._transition_stable_count += 1
-            else:
-                self._transition_stable_count = 0
-        stable_required = max(
-            1, int(self.config.data.get("walkable_stable_frames", 2))
-        )
+        maximum_motion = self._scene_transition.maximum_motion
+        self._transition_activity_seen = self._scene_transition.changed_regions > 0
+        self._edges_stable_count = self._scene_transition.settled_frames
         self.maze_transition_status = (
-            f"Pending {direction}; chunks {changed_count}/{usable_count}, "
-            f"groups {components}, span {span}; "
-            f"{'scene change seen' if self._transition_candidate else 'walking'}"
-            f"; stable {self._transition_stable_count}/{stable_required}"
+            f"Pending {selected_direction}; "
+            f"changed regions {self._scene_transition.changed_regions}/"
+            f"{self._scene_transition.minimum_changed_regions}, subtle "
+            f"{self._scene_transition.subtly_changed_regions}; "
+            f"{self._scene_transition.change_mode}; "
+            f"change {self._scene_transition.maximum_change:.1%}, "
+            f"motion {maximum_motion:.1%}; settled "
+            f"{self._edges_stable_count}/"
+            f"{self._scene_transition.required_settled_frames}; whole "
+            f"{self._whole_scene_transition.motion:.1%}, settled "
+            f"{self._whole_scene_transition.stable_count}/"
+            f"{self._whole_scene_transition.stable_frames}"
         )
         if self._transition_frame % 3 == 0:
             self.on_maze_update()
-        if (
-            self._transition_candidate
-            and self._transition_stable_count >= stable_required
-        ):
+        if transition_complete or identical_transition_complete:
+            evidence = (
+                f"{self._scene_transition.changed_regions} scene regions "
+                f"changed and settled"
+                if transition_complete
+                else "whole-scene transition activity occurred and settled"
+            )
             self._commit_maze_move(
-                direction,
-                "non-adjacent/widespread ground chunks changed, then stabilized",
+                selected_direction,
+                evidence,
             )
             self._observe_visual_exits(frame)
 
     def _commit_maze_move(self, direction: str, evidence: str) -> None:
-        self.maze.moved(direction)
+        moved = self.maze.moved(direction)
         self._clear_pending_move()
         self.maze_transition_status = (
-            f"Room transition confirmed: moved {direction} ({evidence})"
+            f"Room transition confirmed: moved {direction}; new tile added "
+            f"at {self.maze.position} ({evidence})"
+            if moved
+            else f"Scene changed, but {direction} would leave the 10x10 maze"
         )
         self.on_maze_update()
 
@@ -531,9 +515,7 @@ class BotController:
         if state == "lobby" and self.config.lobby_start_point:
             self.maze.reset()
             self._clear_pending_move()
-            self._previous_ground_grid = None
-            self._latest_ground_grid = None
-            self._ground_volatility = None
+            self._latest_edge_signatures = {}
             self.maze_transition_status = "Maze reset in lobby"
             self.on_maze_update()
             return Decision(
@@ -662,8 +644,10 @@ class BotController:
             if isinstance(index, int):
                 direction = self.config.click_zone_name("exploring", index).lower()
                 if direction in {"north", "east", "south", "west"}:
+                    if not self._start_pending_move(direction):
+                        self.on_maze_update()
+                        return False
                     self.maze.observe({direction})
-                    self._start_pending_move(direction)
                     self.on_maze_update()
         ctypes.windll.user32.SetCursorPos(point.x, point.y)
         ctypes.windll.user32.mouse_event(0x0002, 0, 0, 0, 0)

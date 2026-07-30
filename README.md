@@ -74,28 +74,35 @@ target. Select an item to preview, retake, rename, or delete it. Custom states
 can also be added or removed from this tab.
 
 For maze tracking, rename the four exploration click zones exactly `north`,
-`east`, `south`, and `west`. On the Maze tab, choose **Set walkable ground**
-and capture one large floor area while excluding UI and animated scenery.
+`east`, `south`, and `west`. Use the Maze tab's four **Set** buttons to capture
+the corresponding room-entry edges. Avoid animated scenery where possible.
 
-The transition watcher downsamples that area into a 12 by 8 grid and samples it
-independently of the normal decision interval. Walking normally produces a
-connected stream of changed chunks. A transition candidate is recorded when
-three or more spatially separated chunks change, when those changes span at
-least four grid cells, or when at least 25% of usable chunks change together.
-The room move is committed after the grid stabilizes for two samples. Chunks
-that change repeatedly while no move is pending are learned as volatile and
-ignored. Combat cancels the pending move because the battle occurs on the
-current tile.
+Clicking an exit starts a 10-second transition window and snapshots all four
+edge regions as the origin room. The bot confirms a transition when at least
+two regions differ from that snapshot and the changed scene remains stable for
+three samples. It then advances in the clicked direction and immediately adds
+the destination tile to the maze. Requiring multiple changed regions rejects
+localized player movement and most looping scenery. Player sprite captures are
+not required for transition detection. Combat cancels the pending move because
+the battle occurs on the current tile.
 
-The grid size, chunk difference, separation, coverage, stability, sampling,
-volatility, and 12-second recovery timeout are configurable with the
-`walkable_*`, `transition_sample_seconds`, and
-`transition_pending_timeout_seconds` settings. Pending movement suppresses
-additional exploration clicks only; it does not block actions in other states.
+Similar rooms have two additional safeguards: coordinated subtle changes in
+three regions use the normal settling period, while one strongly changed region
+must remain stable for twice as long before movement is confirmed.
 
-The **Sprites** tab manages the boss template. Legacy player-pose captures are
-listed as unused and can be previewed or deleted; player tracking is no longer
-part of scene-transition detection.
+For visually identical rooms, the bot also monitors the entire calibrated
+gameplay area after an exit click. Transition animation followed by a stable
+image confirms movement even when the final room matches the origin.
+
+Scene-change sensitivity, motion stability, stable sample count, sample rate,
+and timeout are controlled by the `transition_edge_*`,
+`transition_minimum_changed_regions`,
+`transition_sample_seconds`, and `transition_pending_timeout_seconds` settings.
+Pending movement suppresses additional exploration clicks only; it does not
+block actions in other states.
+
+The **Sprites** tab manages the boss template and legacy player appearance
+templates. Player templates are no longer used for room-transition detection.
 
 On the **Maze** tab, label the visible exits with the N/E/S/W checks and choose
 **Submit checked tile layout**. The bot stores a SHA-256 identity made from the
@@ -103,11 +110,10 @@ raw, full-resolution color pixels in all four `*_passage` regions, plus the
 checked-exit set, in `tile_layouts.json`. This dictionary persists across
 randomized mazes and bot restarts.
 
-Existing configurations that already contain all four directional
-`scene_change_*` captures continue including those pixels in tile fingerprints.
-Those regions are no longer used to detect transitions, but retaining them
-keeps previously submitted exact layout IDs and comparison descriptors usable.
-New configurations use the four passage regions alone.
+Existing directional `scene_change_*` captures remain part of tile fingerprints
+so previously submitted exact layout IDs and comparison descriptors stay
+compatible. They now also provide the four entry-edge images used by transition
+detection.
 
 Each dictionary entry has a stable ID such as `layout_003`. Encountered maze
 tiles store a reference to that ID, shown as `L003` on the grid. An unseen

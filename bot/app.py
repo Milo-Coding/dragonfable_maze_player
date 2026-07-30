@@ -11,7 +11,7 @@ from .calibration import ScreenSelector
 from .config import Config
 from .controller import BotController
 from .models import Decision, Mode, Point, Region
-from .vision import BossDetector, StateDetector
+from .vision import BossDetector, PlayerDetector, StateDetector
 
 
 class App:
@@ -293,22 +293,31 @@ class App:
         ttk.Button(
             controls, text="Capture boss sprite", command=self._capture_boss_sprite
         ).pack(fill="x")
-        transition_region = ttk.LabelFrame(
-            controls, text="Transition detection", padding=6
+        transition_zones = ttk.LabelFrame(
+            controls, text="Scene edge regions", padding=6
         )
-        transition_region.pack(fill="x", pady=(10, 0))
-        ttk.Button(
-            transition_region,
-            text="Set walkable ground",
-            command=lambda: self._capture_visual_region(
-                "exploring", "walkable_ground"
-            ),
-        ).pack(fill="x")
+        transition_zones.pack(fill="x", pady=(10, 0))
+        for index, direction in enumerate(("north", "south", "east", "west")):
+            ttk.Button(
+                transition_zones,
+                text=f"Set {direction.title()}",
+                command=lambda selected=direction: self._capture_visual_region(
+                    "exploring", f"scene_change_{selected}"
+                ),
+            ).grid(
+                row=index // 2,
+                column=index % 2,
+                padx=3,
+                pady=3,
+                sticky="ew",
+            )
+        transition_zones.columnconfigure(0, weight=1)
+        transition_zones.columnconfigure(1, weight=1)
         ttk.Label(
-            transition_region,
-            text="Include the room floor; avoid UI and animated scenery.",
+            transition_zones,
+            text="Place each region over the corresponding room entry edge.",
             wraplength=190,
-        ).pack(anchor="w", pady=(5, 0))
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(5, 0))
         self._draw_maze()
 
     def _build_sprites_tab(self, frame: ttk.Frame) -> None:
@@ -320,6 +329,9 @@ class App:
         ttk.Button(
             toolbar, text="Capture boss sprite", command=self._capture_boss_sprite
         ).pack(side="left", padx=(0, 4))
+        ttk.Button(
+            toolbar, text="Capture player sprite", command=self._capture_player_sprite
+        ).pack(side="left", padx=4)
         self.sprite_items = ttk.Treeview(
             frame,
             columns=("kind", "name", "path"),
@@ -484,6 +496,41 @@ class App:
         self._refresh_sprites()
         self._draw_maze()
 
+    def _capture_player_sprite(self, replace_index: int | None = None) -> None:
+        self.controller.set_mode(Mode.IDLE)
+        ScreenSelector(
+            self.root,
+            int(self.config.data["monitor"]),
+            "Drag tightly around the player sprite only",
+            on_region=lambda region, crop: self._save_player_sprite(
+                region, crop, replace_index
+            ),
+        )
+
+    def _save_player_sprite(
+        self, _region: Region, crop, replace_index: int | None = None
+    ) -> None:
+        templates = Path("templates")
+        templates.mkdir(exist_ok=True)
+        paths = list(self.config.data.get("player_templates", []))
+        if replace_index is not None and replace_index < len(paths):
+            path = Path(paths[replace_index])
+        else:
+            number = 1
+            while (templates / f"player_{number:03d}.png").exists():
+                number += 1
+            path = templates / f"player_{number:03d}.png"
+            paths.append(path.as_posix())
+        cv2.imwrite(str(path), crop)
+        self.config.data["player_templates"] = paths
+        self.config.save()
+        self.controller.player_detector = PlayerDetector(
+            paths,
+            float(self.config.data.get("player_match_threshold", 0.78)),
+        )
+        self.status.set(f"Saved player sprite {path.name}")
+        self._refresh_sprites()
+
     def _refresh_sprites(self) -> None:
         if not hasattr(self, "sprite_items"):
             return
@@ -497,7 +544,7 @@ class App:
         for index, path in enumerate(self.config.data.get("player_templates", [])):
             self.sprite_items.insert(
                 "", "end", iid=f"player|{index}",
-                values=("player (unused)", f"legacy pose {index + 1}", path),
+                values=("player", f"appearance {index + 1}", path),
             )
 
     def _selected_sprite(self) -> tuple[str, int] | None:
@@ -550,12 +597,7 @@ class App:
         if kind == "boss":
             self._capture_boss_sprite()
         else:
-            messagebox.showinfo(
-                "Player tracking removed",
-                "Player poses are no longer used. You can preview or delete this "
-                "legacy capture.",
-                parent=self.root,
-            )
+            self._capture_player_sprite(index)
 
     def _delete_sprite(self) -> None:
         selected = self._selected_sprite()
@@ -578,6 +620,10 @@ class App:
             if index < len(paths):
                 paths.pop(index)
             self.config.data["player_templates"] = paths
+            self.controller.player_detector = PlayerDetector(
+                paths,
+                float(self.config.data.get("player_match_threshold", 0.78)),
+            )
         self.config.save()
         self._remove_sprite_file(path)
         self._refresh_sprites()
