@@ -11,15 +11,14 @@ import numpy as np
 from pynput import keyboard, mouse
 
 from .config import Config
-from .maze import MazeMemory
-from .models import Decision, Mode, Point
+from .maze import MazeMemory, OPPOSITE
+from .models import Decision, Mode, Point, Region
 from .policy import ContextPolicy, TileLayoutDictionary
 from .vision import (
     BossDetector,
     PlayerDetector,
-    SceneTransitionDetector,
+    PlayerMovementTracker,
     StateDetector,
-    WholeSceneMotionDetector,
 )
 
 
@@ -77,18 +76,11 @@ class BotController:
         self._transition_frame = 0
         self._transition_activity_seen = False
         self._edges_stable_count = 0
-        self._scene_transition = SceneTransitionDetector(
-            config.data.get("transition_edge_activity_difference", 0.02),
-            config.data.get("transition_edge_stability_difference", 0.01),
-            config.data.get("transition_edge_stable_frames", 3),
-            config.data.get("transition_minimum_changed_regions", 2),
+        self._latest_player_position: tuple[int, int] | None = None
+        self._player_movement = PlayerMovementTracker(
+            config.data.get("transition_player_movement_pixels", 8.0),
+            config.data.get("transition_player_stable_frames", 4),
         )
-        self._whole_scene_transition = WholeSceneMotionDetector(
-            config.data.get("transition_whole_scene_activity_difference", 0.003),
-            config.data.get("transition_whole_scene_stability_difference", 0.0015),
-            config.data.get("transition_edge_stable_frames", 3),
-        )
-        self._latest_whole_scene_signature: np.ndarray | None = None
         self.maze_transition_status = "No pending room transition"
         self._latest_tile_layout_signature: str | None = None
         self._latest_tile_layout_descriptor: np.ndarray | None = None
@@ -319,7 +311,7 @@ class BotController:
                 signatures[direction] = signature
         return signatures
 
-    def _whole_scene_signature(self, frame: np.ndarray) -> np.ndarray | None:
+    def _gameplay_region(self, frame: np.ndarray) -> Region | None:
         regions = self.config.visual_regions.get("exploring", {})
         edges = [
             regions.get(f"scene_change_{direction}")
@@ -333,14 +325,7 @@ class BotController:
         top = max(0, min(region.top for region in edges))
         right = min(width, max(region.left + region.width for region in edges))
         bottom = min(height, max(region.top + region.height for region in edges))
-        crop = frame[top:bottom, left:right]
-        if crop.size == 0:
-            return None
-        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (3, 3), 0)
-        return cv2.resize(gray, (240, 135), interpolation=cv2.INTER_AREA).astype(
-            np.float32
-        ) / 255.0
+        return Region(left, top, right - left, bottom - top)
 
     def _clear_pending_move(self) -> None:
         self._pending_maze_move = None
@@ -348,8 +333,7 @@ class BotController:
         self._transition_frame = 0
         self._transition_activity_seen = False
         self._edges_stable_count = 0
-        self._scene_transition.reset()
-        self._whole_scene_transition.reset()
+        self._player_movement.reset()
 
     def _start_pending_move(self, direction: str) -> bool:
         if len(self._latest_edge_signatures) != 4:
@@ -358,15 +342,20 @@ class BotController:
                 f"Cannot track {direction}: {missing} directional edge region(s) missing"
             )
             return False
+        if not self.player_detector.templates:
+            self.maze_transition_status = (
+                f"Cannot track {direction}: capture at least one player sprite"
+            )
+            return False
         self._pending_maze_move = direction
         self._pending_maze_move_started_at = time.monotonic()
         self._transition_frame = 0
         self._transition_activity_seen = False
         self._edges_stable_count = 0
-        self._scene_transition.reset(self._latest_edge_signatures)
-        self._whole_scene_transition.reset(self._latest_whole_scene_signature)
+        self._player_movement.reset(self._latest_player_position)
         self.maze_transition_status = (
-            f"Pending {direction}; waiting for a changed scene to settle"
+            f"Pending {direction}; waiting for the player to appear stopped "
+            "at the destination entryway"
         )
         return True
 
@@ -401,8 +390,14 @@ class BotController:
         if state != "exploring":
             return
         signatures = self._edge_signatures(frame)
-        whole_scene = self._whole_scene_signature(frame)
-        self._latest_whole_scene_signature = whole_scene
+        gameplay_region = self._gameplay_region(frame)
+        player_position, player_score = (
+            self.player_detector.detect(frame, gameplay_region)
+            if gameplay_region is not None
+            else (None, 0.0)
+        )
+        if player_position is not None:
+            self._latest_player_position = player_position
         if len(signatures) != 4:
             if self._pending_maze_move is not None:
                 missing = 4 - len(signatures)
@@ -418,60 +413,30 @@ class BotController:
             return
         selected_direction = self._pending_maze_move
         self._transition_frame += 1
-        transition_complete = self._scene_transition.update(signatures)
-        identical_transition_complete = self._whole_scene_transition.update(
-            whole_scene
+        player_stopped = self._player_movement.update(player_position)
+        expected_entry = OPPOSITE[selected_direction]
+        entry_region = self.config.visual_regions.get("exploring", {}).get(
+            f"scene_change_{expected_entry}"
         )
-        started_at = self._pending_maze_move_started_at
-        confirmation_delay = max(
-            0.25,
-            float(
-                self.config.data.get(
-                    "transition_click_confirmation_seconds", 1.25
-                )
-            ),
+        at_entryway = (
+            player_position is not None
+            and entry_region is not None
+            and entry_region.contains(Point(*player_position))
         )
-        click_confirmed = (
-            state == "exploring"
-            and started_at is not None
-            and time.monotonic() - started_at >= confirmation_delay
-            and self._whole_scene_transition.quiet_count
-            >= self._whole_scene_transition.stable_frames
-        )
-        maximum_motion = self._scene_transition.maximum_motion
-        self._transition_activity_seen = self._scene_transition.changed_regions > 0
-        self._edges_stable_count = self._scene_transition.settled_frames
         self.maze_transition_status = (
             f"Pending {selected_direction}; "
-            f"changed regions {self._scene_transition.changed_regions}/"
-            f"{self._scene_transition.minimum_changed_regions}, subtle "
-            f"{self._scene_transition.subtly_changed_regions}; "
-            f"{self._scene_transition.change_mode}; "
-            f"change {self._scene_transition.maximum_change:.1%}, "
-            f"motion {maximum_motion:.1%}; settled "
-            f"{self._edges_stable_count}/"
-            f"{self._scene_transition.required_settled_frames}; whole "
-            f"{self._whole_scene_transition.motion:.1%}, settled "
-            f"{self._whole_scene_transition.stable_count}/"
-            f"{self._whole_scene_transition.stable_frames}; quiet "
-            f"{self._whole_scene_transition.quiet_count}"
+            f"player {'found' if player_position else 'not found'} "
+            f"({player_score:.0%}); "
+            f"stopped {self._player_movement.stable_frames}/"
+            f"{self._player_movement.stable_frames_required}; "
+            f"{'at' if at_entryway else 'not at'} {expected_entry} entryway"
         )
         if self._transition_frame % 3 == 0:
             self.on_maze_update()
-        if transition_complete or identical_transition_complete or click_confirmed:
-            evidence = (
-                f"{self._scene_transition.changed_regions} scene regions "
-                f"changed and settled"
-                if transition_complete
-                else (
-                    "whole-scene transition activity occurred and settled"
-                    if identical_transition_complete
-                    else "clicked exit and whole scene settled"
-                )
-            )
+        if player_stopped and at_entryway:
             self._commit_maze_move(
                 selected_direction,
-                evidence,
+                f"player appeared stopped at the {expected_entry} entryway",
             )
             self._observe_visual_exits(frame)
 

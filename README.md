@@ -77,35 +77,24 @@ For maze tracking, rename the four exploration click zones exactly `north`,
 `east`, `south`, and `west`. Use the Maze tab's four **Set** buttons to capture
 the corresponding room-entry edges. Avoid animated scenery where possible.
 
-Clicking an exit starts a 10-second transition window and snapshots all four
-edge regions as the origin room. The bot confirms a transition when at least
-two regions differ from that snapshot and the changed scene remains stable for
-three samples. It then advances in the clicked direction and immediately adds
-the destination tile to the maze. Requiring multiple changed regions rejects
-localized player movement and most looping scenery. Player sprite captures are
-not required for transition detection. Combat cancels the pending move because
-the battle occurs on the current tile.
+Clicking an exit starts a pending movement window and blocks further exploration
+clicks. If combat begins, the pending move is canceled and the maze position
+does not change. Otherwise, the saved player sprites are used to confirm the
+character has appeared and remained still for several samples inside the
+expected destination entryway (the edge opposite the clicked direction). Prior
+movement does not have to be observed. The bot then advances in the clicked
+direction and adds the destination tile. This works for similar or
+pixel-identical rooms because room appearance is not the transition evidence.
 
-Similar rooms have two additional safeguards: coordinated subtle changes in
-three regions use the normal settling period, while one strongly changed region
-must remain stable for twice as long before movement is confirmed.
-
-For visually identical rooms, the bot also monitors the entire calibrated
-gameplay area after an exit click. Transition animation followed by a stable
-image confirms movement even when the final room matches the origin. If a
-transition is too fast to appear in any sampled frame, a known exit click
-followed by 1.25 seconds and a settled gameplay scene confirms the move.
-
-Scene-change sensitivity, motion stability, stable sample count, sample rate,
-and timeout are controlled by the `transition_edge_*`,
-`transition_minimum_changed_regions`,
-`transition_whole_scene_*`, `transition_click_confirmation_seconds`,
-`transition_sample_seconds`, and `transition_pending_timeout_seconds` settings.
+Movement distance, stopped sample count, sample rate, and timeout are controlled
+by `transition_player_movement_pixels`, `transition_player_stable_frames`,
+`transition_sample_seconds`, and `transition_pending_timeout_seconds`.
 Pending movement suppresses additional exploration clicks only; it does not
 block actions in other states.
 
-The **Sprites** tab manages the boss template and legacy player appearance
-templates. Player templates are no longer used for room-transition detection.
+The **Sprites** tab manages the boss template and player appearance templates.
+Capture enough player poses/outfits for the character to remain detectable
+while walking and while standing at each entryway.
 
 On the **Maze** tab, label the visible exits with the N/E/S/W checks and choose
 **Submit checked tile layout**. The bot stores a SHA-256 identity made from the

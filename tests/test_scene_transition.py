@@ -3,7 +3,11 @@ import unittest
 import numpy as np
 
 from bot.maze import MazeMemory
-from bot.vision import SceneTransitionDetector, WholeSceneMotionDetector
+from bot.vision import (
+    PlayerMovementTracker,
+    SceneTransitionDetector,
+    WholeSceneMotionDetector,
+)
 
 
 def regions(value: float = 0.0) -> dict[str, np.ndarray]:
@@ -99,6 +103,34 @@ class MazeMemoryTests(unittest.TestCase):
         maze = MazeMemory()
         self.assertFalse(maze.moved("north"))
         self.assertNotIn("north", maze.tiles[(0, 0)].tried)
+
+
+class PlayerMovementTrackerTests(unittest.TestCase):
+    def test_requires_movement_then_stable_position(self) -> None:
+        tracker = PlayerMovementTracker(5.0, 3)
+        tracker.reset((100, 100))
+
+        self.assertFalse(tracker.update((110, 100)))
+        self.assertFalse(tracker.update((120, 100)))
+        self.assertFalse(tracker.update((120, 100)))
+        self.assertFalse(tracker.update((120, 100)))
+        self.assertTrue(tracker.update((120, 100)))
+
+    def test_confirms_stable_position_without_prior_movement(self) -> None:
+        tracker = PlayerMovementTracker(5.0, 2)
+        tracker.reset((100, 100))
+
+        self.assertFalse(tracker.update((100, 100)))
+        self.assertTrue(tracker.update((100, 100)))
+
+    def test_detects_slow_cumulative_movement(self) -> None:
+        tracker = PlayerMovementTracker(5.0, 2)
+        tracker.reset((100, 100))
+
+        self.assertFalse(tracker.update((103, 100)))
+        self.assertFalse(tracker.update((106, 100)))
+        self.assertFalse(tracker.update((106, 100)))
+        self.assertTrue(tracker.update((106, 100)))
 
 
 if __name__ == "__main__":

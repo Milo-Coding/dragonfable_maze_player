@@ -8,6 +8,53 @@ import numpy as np
 from .models import Region
 
 
+class PlayerMovementTracker:
+    """Track whether the player's detected position has become stable."""
+
+    def __init__(self, movement_pixels: float = 8.0, stable_frames: int = 4) -> None:
+        self.movement_pixels = max(1.0, float(movement_pixels))
+        self.stable_frames_required = max(1, int(stable_frames))
+        self.reset()
+
+    def reset(self, position: tuple[int, int] | None = None) -> None:
+        self.origin = position
+        self.previous = position
+        self.movement_seen = False
+        self.stable_frames = 0
+        self.last_distance = 0.0
+
+    def update(self, position: tuple[int, int] | None) -> bool:
+        if position is None:
+            self.stable_frames = 0
+            return False
+        if self.previous is None:
+            self.origin = self.origin or position
+            self.previous = position
+            return False
+        dx = position[0] - self.previous[0]
+        dy = position[1] - self.previous[1]
+        self.last_distance = float(np.hypot(dx, dy))
+        origin_distance = (
+            float(
+                np.hypot(
+                    position[0] - self.origin[0],
+                    position[1] - self.origin[1],
+                )
+            )
+            if self.origin is not None
+            else 0.0
+        )
+        if max(self.last_distance, origin_distance) >= self.movement_pixels:
+            self.movement_seen = True
+        stop_tolerance = max(1.0, self.movement_pixels * 0.25)
+        if self.last_distance > stop_tolerance:
+            self.stable_frames = 0
+        else:
+            self.stable_frames += 1
+        self.previous = position
+        return self.stable_frames >= self.stable_frames_required
+
+
 class SceneTransitionDetector:
     """Detect a completed room change from several small scene regions.
 
@@ -238,6 +285,40 @@ class PlayerDetector:
             for template in [cv2.imread(str(Path(path)), cv2.IMREAD_GRAYSCALE)]
             if template is not None
         ]
+
+    def detect(
+        self,
+        frame_bgr: np.ndarray,
+        region: Region,
+    ) -> tuple[tuple[int, int] | None, float]:
+        if not self.templates:
+            return None, 0.0
+        gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+        height, width = gray.shape
+        left, top = max(0, region.left), max(0, region.top)
+        right = min(width, region.left + region.width)
+        bottom = min(height, region.top + region.height)
+        view = gray[top:bottom, left:right]
+        best_center: tuple[int, int] | None = None
+        best_score = 0.0
+        for template in self.templates:
+            if (
+                view.shape[0] < template.shape[0]
+                or view.shape[1] < template.shape[1]
+            ):
+                continue
+            result = cv2.matchTemplate(view, template, cv2.TM_CCOEFF_NORMED)
+            _minimum, score, _min_location, location = cv2.minMaxLoc(result)
+            if float(score) > best_score:
+                template_height, template_width = template.shape
+                best_score = float(score)
+                best_center = (
+                    left + location[0] + template_width // 2,
+                    top + location[1] + template_height // 2,
+                )
+        if best_score < self.threshold:
+            return None, best_score
+        return best_center, best_score
 
     def detect_regions(
         self,
