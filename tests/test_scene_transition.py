@@ -192,6 +192,16 @@ class MazeMemoryTests(unittest.TestCase):
         maze.set_position(0, 0)
         self.assertEqual((7, 4), maze.boss_position)
 
+    def test_teleporter_stays_disabled_at_known_boss_tile(self) -> None:
+        maze = MazeMemory()
+        maze.set_position(5, 5)
+        maze.observe({"east", "south"}, tile_type="boss")
+        maze.teleporter_position = (1, 1)
+
+        self.assertIsNone(
+            maze.recommended_action(can_place=True, can_return=True)
+        )
+
 
 class PlayerMovementTrackerTests(unittest.TestCase):
     def test_requires_movement_then_stable_position(self) -> None:

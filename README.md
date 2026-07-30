@@ -171,7 +171,18 @@ during exploration. The Maze tab labels the boss action as `BOSS`.
 Boss detection also interrupts an in-progress teleporter placement or return.
 The discovered tile is retained in maze memory and marked `B` on the grid. If
 the player is later displaced, routing back to that known boss tile takes
-priority over exploration and teleporter actions.
+priority over exploration. Boss discovery permanently disables teleporter
+placement and return for the remainder of that maze.
+
+### Mog detection
+
+Capture the Mog sprite and its menu close zone on the **Sprites** tab, then set
+the exploration `mog_search_area`. During exploration, a Mog match overrides
+movement and clicks `mid` once. Because the exploration anchor remains visible
+in the Mog menu, the bot explicitly clicks the calibrated Mog close zone on its
+next action instead of relying on scene classification. The tile is remembered
+for the current maze so the same Mog is not repeatedly triggered. Boss
+detection retains priority over Mog detection.
 
 ### Training the action policy
 

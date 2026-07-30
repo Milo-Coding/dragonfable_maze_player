@@ -428,6 +428,19 @@ class App:
             toolbar, text="Capture boss sprite", command=self._capture_boss_sprite
         ).pack(side="left", padx=(0, 4))
         ttk.Button(
+            toolbar, text="Capture Mog sprite", command=self._capture_mog_sprite
+        ).pack(side="left", padx=4)
+        ttk.Button(
+            toolbar, text="Set Mog close zone", command=self._capture_mog_close_zone
+        ).pack(side="left", padx=4)
+        ttk.Button(
+            toolbar,
+            text="Set Mog search area",
+            command=lambda: self._capture_visual_region(
+                "exploring", "mog_search_area"
+            ),
+        ).pack(side="left", padx=4)
+        ttk.Button(
             toolbar, text="Capture player sprite", command=self._capture_player_sprite
         ).pack(side="left", padx=4)
         self.sprite_items = ttk.Treeview(
@@ -594,6 +607,46 @@ class App:
         self._refresh_sprites()
         self._draw_maze()
 
+    def _capture_mog_sprite(self) -> None:
+        self.controller.set_mode(Mode.IDLE)
+        ScreenSelector(
+            self.root,
+            int(self.config.data["monitor"]),
+            "Drag tightly around the Mog sprite only",
+            on_region=self._save_mog_sprite,
+        )
+
+    def _save_mog_sprite(self, _region: Region, crop) -> None:
+        templates = Path("templates")
+        templates.mkdir(exist_ok=True)
+        path = templates / "mog.png"
+        cv2.imwrite(str(path), crop)
+        self.config.data["mog_template"] = path.as_posix()
+        self.config.save()
+        self.controller.mog_detector = BossDetector(
+            path.as_posix(),
+            float(self.config.data.get("mog_match_threshold", 0.82)),
+        )
+        self.controller.mog_status = (
+            "Mog sprite saved; add mog_search_area if it is not configured"
+        )
+        self._refresh_sprites()
+        self._draw_maze()
+
+    def _capture_mog_close_zone(self) -> None:
+        self.controller.set_mode(Mode.IDLE)
+        ScreenSelector(
+            self.root,
+            int(self.config.data["monitor"]),
+            "Drag around the button that closes the Mog menu",
+            on_region=lambda region, _crop:
+                self._save_mog_close_zone(region),
+        )
+
+    def _save_mog_close_zone(self, region: Region) -> None:
+        self.config.set_mog_close_click_zone(region)
+        self.status.set("Saved Mog menu close zone")
+
     def _capture_player_sprite(self, replace_index: int | None = None) -> None:
         self.controller.set_mode(Mode.IDLE)
         ScreenSelector(
@@ -639,6 +692,12 @@ class App:
                 "", "end", iid="boss|0",
                 values=("boss", "boss sprite", boss),
             )
+        mog = self.config.data.get("mog_template")
+        if mog:
+            self.sprite_items.insert(
+                "", "end", iid="mog|0",
+                values=("mog", "Mog sprite", mog),
+            )
         for index, path in enumerate(self.config.data.get("player_templates", [])):
             self.sprite_items.insert(
                 "", "end", iid=f"player|{index}",
@@ -656,6 +715,8 @@ class App:
         kind, index = selected
         if kind == "boss":
             return self.config.data.get("boss_template")
+        if kind == "mog":
+            return self.config.data.get("mog_template")
         paths = self.config.data.get("player_templates", [])
         return paths[index] if index < len(paths) else None
 
@@ -694,6 +755,8 @@ class App:
         kind, index = selected
         if kind == "boss":
             self._capture_boss_sprite()
+        elif kind == "mog":
+            self._capture_mog_sprite()
         else:
             self._capture_player_sprite(index)
 
@@ -713,6 +776,10 @@ class App:
             self.config.data["boss_template"] = None
             self.controller.boss_detector = BossDetector(None)
             self.controller.boss_status = "Boss detector not configured"
+        elif kind == "mog":
+            self.config.data["mog_template"] = None
+            self.controller.mog_detector = BossDetector(None)
+            self.controller.mog_status = "Mog detector not configured"
         else:
             paths = list(self.config.data.get("player_templates", []))
             if index < len(paths):
@@ -1034,6 +1101,7 @@ class App:
             f"Submitted layouts: {len(self.controller.tile_layouts.layouts)}\n"
             f"{self.controller.maze_transition_status}\n"
             f"{self.controller.boss_status}\n"
+            f"{self.controller.mog_status}\n"
             f"{self.controller.layout_status}"
         )
 

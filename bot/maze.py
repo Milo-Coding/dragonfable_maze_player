@@ -170,10 +170,14 @@ class MazeMemory:
         self, can_place: bool = False, can_return: bool = False
     ) -> str | None:
         """Use the teleporter only to remove walk-backs from a branch."""
-        if self.boss_position is not None and self.boss_position != self.position:
-            boss_route = self._route_to(self.boss_position)
-            if boss_route is not None:
-                return boss_route
+        if self.boss_position is not None:
+            if self.boss_position != self.position:
+                boss_route = self._route_to(self.boss_position)
+                if boss_route is not None:
+                    return boss_route
+            # Once found, the boss is the sole maze objective. Never place or
+            # return through a teleporter for the remainder of this maze.
+            return None
         tile = self.tiles.setdefault(self.position, Tile())
         untried = [
             direction

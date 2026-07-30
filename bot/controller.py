@@ -53,6 +53,10 @@ class BotController:
             config.data.get("boss_template"),
             float(config.data.get("boss_match_threshold", 0.82)),
         )
+        self.mog_detector = BossDetector(
+            config.data.get("mog_template"),
+            float(config.data.get("mog_match_threshold", 0.82)),
+        )
         self.player_detector = PlayerDetector(
             config.data.get("player_templates", []),
             float(config.data.get("player_match_threshold", 0.78)),
@@ -63,6 +67,13 @@ class BotController:
             else "Boss detector not configured"
         )
         self.boss_direction: str | None = None
+        self.mog_status = (
+            "Mog detector ready; waiting for exploration"
+            if self.mog_detector.template is not None
+            else "Mog detector not configured"
+        )
+        self._mog_interacted_tiles: set[tuple[int, int]] = set()
+        self._mog_menu_pending = False
         self.policy = ContextPolicy()
         self.tile_layouts = TileLayoutDictionary()
         self.layout_status = self.tile_layouts.last_match_status
@@ -109,6 +120,7 @@ class BotController:
         self.mode = mode
         if mode == Mode.IDLE:
             self._teleporter_sequence = None
+            self._mog_menu_pending = False
 
     def set_training_enabled(self, enabled: bool) -> None:
         self.training_enabled = enabled
@@ -186,6 +198,8 @@ class BotController:
 
     def reset_maze(self) -> None:
         self.maze.reset()
+        self._mog_interacted_tiles.clear()
+        self._mog_menu_pending = False
         self._teleporter_sequence = None
         self._clear_pending_move()
         self._latest_edge_signatures = {}
@@ -224,6 +238,21 @@ class BotController:
                 "teleporter_action": action,
                 "teleporter_step": step,
             },
+        )
+
+    def _mog_close_decision(
+        self, state: str, confidence: float
+    ) -> Decision | None:
+        zone = self.config.mog_close_click_zone
+        if zone is None:
+            return None
+        point = Point(zone.left + zone.width // 2, zone.top + zone.height // 2)
+        return Decision(
+            state,
+            point,
+            "Close Mog menu",
+            confidence,
+            {"mog_close": True},
         )
 
     @property
@@ -278,6 +307,7 @@ class BotController:
             self.cancel_binding_capture()
             self.mode = Mode.IDLE
             self._teleporter_sequence = None
+            self._mog_menu_pending = False
             self.on_emergency_stop()
             return
         binding = self._key_binding(key)
@@ -573,6 +603,10 @@ class BotController:
             self._latest_click_state = (
                 state if state != "unknown" else None
             )
+        if self._mog_menu_pending:
+            decision = self._mog_close_decision(state, confidence)
+            if decision is not None:
+                return decision
         if self._teleporter_sequence is not None and state != "exploring":
             action, step = self._teleporter_sequence
             decision = self._teleporter_decision(
@@ -583,6 +617,8 @@ class BotController:
         self._track_clear(state)
         if state == "lobby" and self.config.lobby_start_point:
             self.maze.reset()
+            self._mog_interacted_tiles.clear()
+            self._mog_menu_pending = False
             self._clear_pending_move()
             self._latest_edge_signatures = {}
             self.maze_transition_status = "Maze reset in lobby"
@@ -595,6 +631,8 @@ class BotController:
         if state == "exploring" and zones:
             boss_score = 0.0
             boss_direction: str | None = None
+            mog_score = 0.0
+            mog_detected = False
             previous_boss_status = self.boss_status
             search_area = visual_regions.get("boss_search_area")
             boss_center, boss_score = self.boss_detector.detect(frame, search_area)
@@ -621,15 +659,48 @@ class BotController:
                 )
             if self.boss_status != previous_boss_status:
                 self.on_maze_update()
+            if self.maze.boss_position is not None:
+                self._teleporter_sequence = None
+            previous_mog_status = self.mog_status
+            if boss_direction:
+                self.mog_status = "Mog check skipped because boss has priority"
+            elif self.maze.position in self._mog_interacted_tiles:
+                self.mog_status = "Mog already handled on this tile"
+            else:
+                mog_area = visual_regions.get("mog_search_area")
+                mog_center, mog_score = self.mog_detector.detect(frame, mog_area)
+                mog_match = mog_center is not None and mog_area is not None
+                mog_detected = (
+                    mog_match and self.config.mog_close_click_zone is not None
+                )
+                self.mog_status = (
+                    f"Mog detected ({mog_score:.0%}); interact via mid"
+                    if mog_detected
+                    else (
+                        "Mog detected, but its menu close zone is not configured"
+                        if mog_match
+                        else (
+                            f"Mog not detected (best match {mog_score:.0%})"
+                            if mog_area is not None
+                            and self.mog_detector.template is not None
+                            else "Mog detection needs mog sprite and mog_search_area"
+                        )
+                    )
+                )
+            if self.mog_status != previous_mog_status:
+                self.on_maze_update()
             if boss_direction:
                 recommendation = "mid"
+            elif mog_detected:
+                self._teleporter_sequence = None
+                if self._pending_maze_move is not None:
+                    self._clear_pending_move()
+                    self.maze_transition_status = (
+                        "Pending movement canceled by Mog detection"
+                    )
+                recommendation = "mid"
             else:
-                if (
-                    self.maze.boss_position is not None
-                    and self.maze.boss_position != self.maze.position
-                ):
-                    self._teleporter_sequence = None
-                elif self._teleporter_sequence is not None:
+                if self._teleporter_sequence is not None:
                     action, step = self._teleporter_sequence
                     decision = self._teleporter_decision(
                         state, confidence, action, step
@@ -665,6 +736,8 @@ class BotController:
             reason = f"Maze recommendation: {recommendation}"
             if boss_direction:
                 reason = f"BOSS {boss_score:.0%}: move mid"
+            elif mog_detected:
+                reason = f"MOG {mog_score:.0%}: interact via mid"
             return Decision(
                 state,
                 point,
@@ -674,6 +747,8 @@ class BotController:
                     "zone_index": index,
                     "boss_score": boss_score,
                     "boss_direction": boss_direction,
+                    "mog_score": mog_score,
+                    "mog_detected": mog_detected,
                 },
             )
         if state == "combat" and zones:
@@ -727,6 +802,9 @@ class BotController:
             return False
         allowed = self.config.click_zones.get(decision.state_name, [])
         teleporter_action = decision.details.get("teleporter_action")
+        if decision.details.get("mog_close"):
+            close_zone = self.config.mog_close_click_zone
+            allowed = [close_zone] if close_zone is not None else []
         if teleporter_action in {"place", "return"}:
             allowed = [
                 zone
@@ -745,6 +823,10 @@ class BotController:
         # Check the mode again immediately before the OS-level click.
         if self.mode != Mode.LIVE:
             return False
+        if decision.details.get("mog_close"):
+            if not self._mog_menu_pending:
+                return False
+            self._mog_menu_pending = False
         if teleporter_action in {"place", "return"}:
             step = decision.details.get("teleporter_step")
             if not isinstance(step, int):
@@ -771,6 +853,9 @@ class BotController:
                     )
                 self.on_maze_update()
         if decision.state_name == "exploring":
+            if decision.details.get("mog_detected"):
+                self._mog_interacted_tiles.add(self.maze.position)
+                self._mog_menu_pending = True
             index = decision.details.get("zone_index")
             if isinstance(index, int):
                 direction = self.config.click_zone_name("exploring", index).lower()

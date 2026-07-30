@@ -28,6 +28,9 @@ DEFAULTS = {
     "anchor_names": {},
     "boss_template": None,
     "boss_match_threshold": 0.82,
+    "mog_template": None,
+    "mog_match_threshold": 0.82,
+    "mog_close_click_zone": None,
     "player_templates": [],
     "player_match_threshold": 0.78,
     "transition_pending_timeout_seconds": 10.0,
@@ -171,6 +174,19 @@ class Config:
     def lobby_start_point(self) -> Point | None:
         value = self.data.get("lobby_start_point")
         return Point(**value) if value else None
+
+    @property
+    def mog_close_click_zone(self) -> Region | None:
+        value = self.data.get("mog_close_click_zone")
+        return Region(**value) if value else None
+
+    def set_mog_close_click_zone(self, region: Region) -> None:
+        self.data["mog_close_click_zone"] = asdict(region)
+        self.save()
+
+    def delete_mog_close_click_zone(self) -> None:
+        self.data["mog_close_click_zone"] = None
+        self.save()
 
     def set_region(self, name: str, region: Region) -> None:
         self.data["regions"][name] = asdict(region)
