@@ -903,6 +903,7 @@ class App:
             else "unlinked"
         )
         self.maze_status.set(
+            f"Clears: {self.controller.clears}  "
             f"Current: ({current_x}, {current_y})  "
             f"Objective: find boss  "
             f"Recommendation: {recommendation or 'none'}"

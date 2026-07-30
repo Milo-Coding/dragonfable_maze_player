@@ -10,6 +10,7 @@ from .models import Point, Region
 
 DEFAULTS = {
     "monitor": 1,
+    "clears": 10,
     "tick_seconds": 0.5,
     "confidence_threshold": 0.82,
     "regions": {},
@@ -32,8 +33,8 @@ DEFAULTS = {
     "transition_minimum_changed_regions": 2,
     "transition_whole_scene_activity_difference": 0.003,
     "transition_whole_scene_stability_difference": 0.0015,
-    "transition_click_confirmation_seconds": 1.25,
-    "transition_player_movement_pixels": 8.0,
+    "transition_click_confirmation_seconds": 1,
+    "transition_player_movement_pixels": 4.0,
     "transition_player_stable_frames": 4,
     "mode_bindings": {
         "training": "mouse:x1",

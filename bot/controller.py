@@ -44,6 +44,8 @@ class BotController:
         )
         self.mode = Mode.IDLE
         self.maze = MazeMemory()
+        self.clears = max(0, int(config.data.get("clears", 0)))
+        self._quest_in_progress = False
         self.detector = StateDetector(
             config.data["templates"], config.data["confidence_threshold"]
         )
@@ -495,9 +497,19 @@ class BotController:
             if predicted_exits - before or previous_link != (layout_id, provisional):
                 self.on_maze_update()
 
+    def _track_clear(self, state: str) -> None:
+        if state in {"exploring", "combat"}:
+            self._quest_in_progress = True
+        elif state == "lobby" and self._quest_in_progress:
+            self.clears += 1
+            self.config.data["clears"] = self.clears
+            self.config.save()
+            self._quest_in_progress = False
+
     def _decide(
         self, state: str, confidence: float, frame: np.ndarray
     ) -> Decision:
+        self._track_clear(state)
         if state == "lobby" and self.config.lobby_start_point:
             self.maze.reset()
             self._clear_pending_move()
