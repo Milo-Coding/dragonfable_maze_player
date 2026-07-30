@@ -84,8 +84,8 @@ class BotController:
             config.data.get("transition_minimum_changed_regions", 2),
         )
         self._whole_scene_transition = WholeSceneMotionDetector(
-            config.data.get("transition_whole_scene_activity_difference", 0.012),
-            config.data.get("transition_whole_scene_stability_difference", 0.006),
+            config.data.get("transition_whole_scene_activity_difference", 0.003),
+            config.data.get("transition_whole_scene_stability_difference", 0.0015),
             config.data.get("transition_edge_stable_frames", 3),
         )
         self._latest_whole_scene_signature: np.ndarray | None = None
@@ -337,8 +337,8 @@ class BotController:
         if crop.size == 0:
             return None
         gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (5, 5), 0)
-        return cv2.resize(gray, (96, 64), interpolation=cv2.INTER_AREA).astype(
+        gray = cv2.GaussianBlur(gray, (3, 3), 0)
+        return cv2.resize(gray, (240, 135), interpolation=cv2.INTER_AREA).astype(
             np.float32
         ) / 255.0
 
@@ -422,6 +422,22 @@ class BotController:
         identical_transition_complete = self._whole_scene_transition.update(
             whole_scene
         )
+        started_at = self._pending_maze_move_started_at
+        confirmation_delay = max(
+            0.25,
+            float(
+                self.config.data.get(
+                    "transition_click_confirmation_seconds", 1.25
+                )
+            ),
+        )
+        click_confirmed = (
+            state == "exploring"
+            and started_at is not None
+            and time.monotonic() - started_at >= confirmation_delay
+            and self._whole_scene_transition.quiet_count
+            >= self._whole_scene_transition.stable_frames
+        )
         maximum_motion = self._scene_transition.maximum_motion
         self._transition_activity_seen = self._scene_transition.changed_regions > 0
         self._edges_stable_count = self._scene_transition.settled_frames
@@ -437,16 +453,21 @@ class BotController:
             f"{self._scene_transition.required_settled_frames}; whole "
             f"{self._whole_scene_transition.motion:.1%}, settled "
             f"{self._whole_scene_transition.stable_count}/"
-            f"{self._whole_scene_transition.stable_frames}"
+            f"{self._whole_scene_transition.stable_frames}; quiet "
+            f"{self._whole_scene_transition.quiet_count}"
         )
         if self._transition_frame % 3 == 0:
             self.on_maze_update()
-        if transition_complete or identical_transition_complete:
+        if transition_complete or identical_transition_complete or click_confirmed:
             evidence = (
                 f"{self._scene_transition.changed_regions} scene regions "
                 f"changed and settled"
                 if transition_complete
-                else "whole-scene transition activity occurred and settled"
+                else (
+                    "whole-scene transition activity occurred and settled"
+                    if identical_transition_complete
+                    else "clicked exit and whole scene settled"
+                )
             )
             self._commit_maze_move(
                 selected_direction,

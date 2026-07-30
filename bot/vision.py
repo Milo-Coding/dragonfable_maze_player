@@ -116,8 +116,8 @@ class WholeSceneMotionDetector:
 
     def __init__(
         self,
-        activity_threshold: float = 0.012,
-        stability_threshold: float = 0.006,
+        activity_threshold: float = 0.003,
+        stability_threshold: float = 0.0015,
         stable_frames: int = 3,
     ) -> None:
         self.activity_threshold = max(0.0, float(activity_threshold))
@@ -129,6 +129,7 @@ class WholeSceneMotionDetector:
         self.previous = origin.copy() if origin is not None else None
         self.activity_seen = False
         self.stable_count = 0
+        self.quiet_count = 0
         self.motion = 0.0
 
     def update(self, current: np.ndarray | None) -> bool:
@@ -147,6 +148,10 @@ class WholeSceneMotionDetector:
             self.stable_count += 1
         else:
             self.stable_count = 0
+        if self.motion <= self.stability_threshold:
+            self.quiet_count += 1
+        else:
+            self.quiet_count = 0
         self.previous = current.copy()
         return self.activity_seen and self.stable_count >= self.stable_frames
 

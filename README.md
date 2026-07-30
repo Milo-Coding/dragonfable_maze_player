@@ -92,11 +92,14 @@ must remain stable for twice as long before movement is confirmed.
 
 For visually identical rooms, the bot also monitors the entire calibrated
 gameplay area after an exit click. Transition animation followed by a stable
-image confirms movement even when the final room matches the origin.
+image confirms movement even when the final room matches the origin. If a
+transition is too fast to appear in any sampled frame, a known exit click
+followed by 1.25 seconds and a settled gameplay scene confirms the move.
 
 Scene-change sensitivity, motion stability, stable sample count, sample rate,
 and timeout are controlled by the `transition_edge_*`,
 `transition_minimum_changed_regions`,
+`transition_whole_scene_*`, `transition_click_confirmation_seconds`,
 `transition_sample_seconds`, and `transition_pending_timeout_seconds` settings.
 Pending movement suppresses additional exploration clicks only; it does not
 block actions in other states.
