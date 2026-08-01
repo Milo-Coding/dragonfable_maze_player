@@ -639,9 +639,9 @@ class BotController:
             if boss_center is not None and search_area is not None:
                 self._teleporter_sequence = None
                 if self._pending_maze_move is not None:
-                    self._clear_pending_move()
-                    self.maze_transition_status = (
-                        "Pending movement canceled by boss detection"
+                    self._commit_maze_move(
+                        self._pending_maze_move,
+                        "boss detected in the destination room",
                     )
                 boss_direction = "mid"
                 self.boss_direction = boss_direction
@@ -694,9 +694,9 @@ class BotController:
             elif mog_detected:
                 self._teleporter_sequence = None
                 if self._pending_maze_move is not None:
-                    self._clear_pending_move()
-                    self.maze_transition_status = (
-                        "Pending movement canceled by Mog detection"
+                    self._commit_maze_move(
+                        self._pending_maze_move,
+                        "Mog detected in the destination room",
                     )
                 recommendation = "mid"
             else:

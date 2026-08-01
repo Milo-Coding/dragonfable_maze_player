@@ -2,6 +2,83 @@
 
 A safety-first Windows desktop bot foundation based on `Idea.md`.
 
+## Combat Bot 2.0 (standalone)
+
+Combat Bot 2.0 is separate from the maze bot: it uses `run_combat_bot.py`, the
+`combat_bot/` package, `combat_config.json`, and `combat_policy_v2.json`. Running
+it does not start or modify the original bot's controller or learned policy.
+
+Start it with:
+
+```powershell
+Copy-Item combat_config.example.json combat_config.json
+python run_combat_bot.py
+```
+
+Use **Calibration** to capture one stable combat anchor, named viewing zones,
+and named clickable action zones. Each viewing zone is resized to an 8 by 8
+spatial grid. Every cell is one-hot encoded into 12 hue, 4 saturation, and 4
+brightness bins. This retains the spatial shapes of health digits and cooldown
+glyphs as well as button colors. Each zone has its own configurable dense
+neural branch, and the branch contributions combine into the action policy.
+
+In **Training**, the agent continuously checks the anchor, scans the enabled
+viewing zones, and displays its highest-probability action prediction without
+clicking. Your click inside an enabled action zone supplies the demonstrated
+action and trains the policy. On **Last-click impact**, select the viewing zones
+that mattered most and apply a focused replay update. Only checked zone
+branches receive gradients during that replay; unchecked branches and the
+global action bias remain frozen.
+
+While Training is active, the green target marks the predicted action and up
+to three red targets mark the viewing zones with the strongest influence on
+that prediction. Influence is the absolute margin between a zone branch's
+contribution to the selected action and its average contribution to the other
+actions, so both strong supporting and strong opposing evidence can be shown.
+
+In **Live**, the highest-probability action is clicked at the center of its
+allowlisted zone. Training uses the same deterministic policy prediction and
+does not introduce random exploration. **Idle** performs no screen capture or
+decision work; it only waits for mode changes. Escape is the emergency stop.
+The global defaults are thumb button X1 for Training and thumb button X2 for
+Live. They can be changed on Combat Bot 2.0's **Controls** tab.
+
+### Priority tasks and scanning
+
+The **Tasks** tab turns Combat Bot 2.0 into a priority task runner. Each task
+has one or more alternative anchors, a name, enabled state, behavior, and row
+priority. A task is active when any of its anchors matches. Move tasks up or
+down to rank them. When several tasks match the screen, only the highest
+enabled row is considered. Current behavior types are:
+
+- `combat`: selects actions with the one-hot visual-feature neural policy.
+- `exploring`: uses the original bounded-depth maze search algorithm.
+- `scanning_for_<target>`: searches configured zones for a scan target and
+  clicks one random detection.
+- `simple`: clicks its configured point whenever its anchor is present.
+
+Use the **Scanning** tab to create and rename targets. Select a target, capture
+one or more tightly cropped sprite samples, and add one or more scan zones.
+The scan behavior compares every sample against every scan zone, merges nearby
+duplicate match peaks, and randomly chooses among the remaining detections.
+Deleting a scan target disables tasks that reference it.
+
+The task-oriented **Maze** tab replaces old raw tile fingerprints and embedded
+boss/Mog checks. For each direction, capture the zone while its
+exit is visibly active. During exploration, the current zone is compared
+directly with that captured reference; a similarity at or above
+`maze_exit_threshold` marks the direction active on the current tile. Configure
+the N/E/S/W movement destinations as simple click points. The migrated
+`MazeMemory` keeps the explored map, branch-depth ordering, and shortest route
+back to remaining frontiers. Boss and Mog interactions should be separate,
+higher-priority tasks.
+
+The Maze tab retains the original branch-checkpoint teleporter strategy.
+Capture its three placement clicks and two return clicks in execution order.
+Once all five are configured, the solver can anchor a branch and return after
+exhausting the selected route. Teleporter operations remain zero-cost maze
+actions and do not create map movement.
+
 ## What works now
 
 - Always-on-top control panel with **Idle**, **Training**, and **Live** modes.
@@ -178,7 +255,9 @@ placement and return for the remainder of that maze.
 
 Capture the Mog sprite and its menu close zone on the **Sprites** tab, then set
 the exploration `mog_search_area`. During exploration, a Mog match overrides
-movement and clicks `mid` once. Because the exploration anchor remains visible
+movement and clicks `mid` once. If the Mog is detected while entry into its
+room is still pending, that detection confirms the room transition before the
+interaction is recorded. Because the exploration anchor remains visible
 in the Mog menu, the bot explicitly clicks the calibrated Mog close zone on its
 next action instead of relying on scene classification. The tile is remembered
 for the current maze so the same Mog is not repeatedly triggered. Boss

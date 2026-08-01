@@ -1,0 +1,439 @@
+{
+  "monitor": 1,
+  "tick_seconds": 0.35,
+  "click_interval_seconds": 1.25,
+  "anchor_threshold": 0.82,
+  "anchor_region": {
+    "left": 1182,
+    "top": 1124,
+    "width": 196,
+    "height": 64
+  },
+  "anchor_template": "templates/combat_v2_anchor.png",
+  "view_zones": [
+    {
+      "name": "health_100s",
+      "region": {
+        "left": 1783,
+        "top": 1409,
+        "width": 19,
+        "height": 28
+      },
+      "enabled": true
+    },
+    {
+      "name": "player_mp_100s",
+      "region": {
+        "left": 616,
+        "top": 1463,
+        "width": 17,
+        "height": 29
+      },
+      "enabled": true
+    },
+    {
+      "name": "cd_r2",
+      "region": {
+        "left": 1594,
+        "top": 1187,
+        "width": 16,
+        "height": 19
+      },
+      "enabled": true
+    },
+    {
+      "name": "enemy_2",
+      "region": {
+        "left": 1651,
+        "top": 594,
+        "width": 105,
+        "height": 104
+      },
+      "enabled": true
+    },
+    {
+      "name": "enemy_3",
+      "region": {
+        "left": 1952,
+        "top": 667,
+        "width": 85,
+        "height": 105
+      },
+      "enabled": true
+    },
+    {
+      "name": "cd_l4",
+      "region": {
+        "left": 816,
+        "top": 1181,
+        "width": 16,
+        "height": 25
+      },
+      "enabled": true
+    }
+  ],
+  "action_zones": [
+    {
+      "name": "attack",
+      "region": {
+        "left": 1148,
+        "top": 1085,
+        "width": 266,
+        "height": 146
+      },
+      "enabled": true
+    },
+    {
+      "name": "r2",
+      "region": {
+        "left": 1525,
+        "top": 1121,
+        "width": 87,
+        "height": 88
+      },
+      "enabled": true
+    },
+    {
+      "name": "l4",
+      "region": {
+        "left": 748,
+        "top": 1119,
+        "width": 88,
+        "height": 87
+      },
+      "enabled": true
+    }
+  ],
+  "hidden_layers": [
+    64,
+    32
+  ],
+  "learning_rate": 0.01,
+  "mode_bindings": {
+    "training": "mouse:x1",
+    "live": "mouse:x2"
+  },
+  "tasks": [
+    {
+      "id": "061e13fef4604587bb7ff1711cbf76c3",
+      "name": "close_popup",
+      "behavior": "simple",
+      "enabled": false,
+      "simple_point": {
+        "x": 1274,
+        "y": 86
+      },
+      "anchors": [
+        {
+          "region": {
+            "left": 430,
+            "top": 56,
+            "width": 353,
+            "height": 51
+          },
+          "template": "templates/task_061e13fef4604587bb7ff1711cbf76c3_anchor.png"
+        }
+      ]
+    },
+    {
+      "id": "b9c535812af74f8cb0def6e81a71db06",
+      "name": "Quest_Completed",
+      "behavior": "simple",
+      "enabled": true,
+      "simple_point": {
+        "x": 1318,
+        "y": 1162
+      },
+      "anchors": [
+        {
+          "region": {
+            "left": 1164,
+            "top": 398,
+            "width": 270,
+            "height": 51
+          },
+          "template": "templates/task_b9c535812af74f8cb0def6e81a71db06_anchor.png"
+        }
+      ]
+    },
+    {
+      "id": "95f222e2d27045af9c764d2fa0f9c46f",
+      "name": "Victory",
+      "behavior": "simple",
+      "enabled": true,
+      "simple_point": {
+        "x": 1306,
+        "y": 941
+      },
+      "anchors": [
+        {
+          "region": {
+            "left": 1204,
+            "top": 916,
+            "width": 208,
+            "height": 47
+          },
+          "template": "templates/task_95f222e2d27045af9c764d2fa0f9c46f_anchor.png"
+        }
+      ]
+    },
+    {
+      "id": "f5babc54a7544690be1730466dc57881",
+      "name": "Defender's Medal",
+      "behavior": "simple",
+      "enabled": true,
+      "simple_point": {
+        "x": 1318,
+        "y": 1166
+      },
+      "anchors": [
+        {
+          "region": {
+            "left": 903,
+            "top": 423,
+            "width": 369,
+            "height": 45
+          },
+          "template": "templates/task_f5babc54a7544690be1730466dc57881_anchor.png"
+        }
+      ]
+    },
+    {
+      "id": "728060f2b2184b43a26980558377d485",
+      "name": "combat",
+      "behavior": "combat",
+      "enabled": true,
+      "simple_point": null,
+      "anchors": [
+        {
+          "region": {
+            "left": 1182,
+            "top": 1124,
+            "width": 196,
+            "height": 64
+          },
+          "template": "templates/combat_v2_anchor.png"
+        }
+      ]
+    },
+    {
+      "id": "b70298eaced745d39e4969fcb2284f96",
+      "name": "to_battle",
+      "behavior": "simple",
+      "enabled": true,
+      "simple_point": {
+        "x": 1756,
+        "y": 749
+      },
+      "anchors": [
+        {
+          "region": {
+            "left": 1573,
+            "top": 709,
+            "width": 392,
+            "height": 76
+          },
+          "template": "templates/task_b70298eaced745d39e4969fcb2284f96_anchor.png"
+        }
+      ]
+    },
+    {
+      "id": "f11b7f635037450f97e75ea20060cfd6",
+      "name": "kill_fire_guys",
+      "behavior": "scanning:1d248ce7b8164de296925a119202376f",
+      "enabled": true,
+      "simple_point": null,
+      "anchors": [
+        {
+          "region": {
+            "left": 283,
+            "top": 194,
+            "width": 179,
+            "height": 236
+          },
+          "template": "templates/task_f11b7f635037450f97e75ea20060cfd6_anchor.png"
+        },
+        {
+          "region": {
+            "left": 363,
+            "top": 264,
+            "width": 95,
+            "height": 122
+          },
+          "template": "templates/task_f11b7f635037450f97e75ea20060cfd6_anchor_002.png"
+        },
+        {
+          "region": {
+            "left": 318,
+            "top": 267,
+            "width": 64,
+            "height": 72
+          },
+          "template": "templates/task_f11b7f635037450f97e75ea20060cfd6_anchor_003.png"
+        },
+        {
+          "region": {
+            "left": 355,
+            "top": 166,
+            "width": 94,
+            "height": 112
+          },
+          "template": "templates/task_f11b7f635037450f97e75ea20060cfd6_anchor_004.png"
+        },
+        {
+          "region": {
+            "left": 400,
+            "top": 263,
+            "width": 136,
+            "height": 49
+          },
+          "template": "templates/task_f11b7f635037450f97e75ea20060cfd6_anchor_005.png"
+        },
+        {
+          "region": {
+            "left": 342,
+            "top": 249,
+            "width": 86,
+            "height": 90
+          },
+          "template": "templates/task_f11b7f635037450f97e75ea20060cfd6_anchor_006.png"
+        },
+        {
+          "region": {
+            "left": 330,
+            "top": 259,
+            "width": 96,
+            "height": 64
+          },
+          "template": "templates/task_f11b7f635037450f97e75ea20060cfd6_anchor_007.png"
+        },
+        {
+          "region": {
+            "left": 360,
+            "top": 217,
+            "width": 98,
+            "height": 95
+          },
+          "template": "templates/task_f11b7f635037450f97e75ea20060cfd6_anchor_008.png"
+        }
+      ]
+    },
+    {
+      "id": "4d733e4c2bf24ed3bd68019428c269f7",
+      "name": "Explore",
+      "behavior": "exploring",
+      "enabled": false,
+      "anchors": [],
+      "simple_point": null
+    },
+    {
+      "id": "c6a0e264f8924dd7abd0ac09fcc4b7a9",
+      "name": "Level_up",
+      "behavior": "simple",
+      "enabled": true,
+      "anchors": [
+        {
+          "region": {
+            "left": 1031,
+            "top": 493,
+            "width": 533,
+            "height": 144
+          },
+          "template": "templates/task_c6a0e264f8924dd7abd0ac09fcc4b7a9_anchor_001.png"
+        }
+      ],
+      "simple_point": {
+        "x": 1312,
+        "y": 1187
+      }
+    }
+  ],
+  "scan_targets": [
+    {
+      "id": "1d248ce7b8164de296925a119202376f",
+      "name": "fire_guy",
+      "sprites": [
+        {
+          "path": "templates/scan_1d248ce7b8164de296925a119202376f_001.png",
+          "source_region": {
+            "left": 1194,
+            "top": 841,
+            "width": 57,
+            "height": 101
+          }
+        },
+        {
+          "path": "templates/scan_1d248ce7b8164de296925a119202376f_002.png",
+          "source_region": {
+            "left": 972,
+            "top": 478,
+            "width": 53,
+            "height": 46
+          }
+        },
+        {
+          "path": "templates/scan_1d248ce7b8164de296925a119202376f_003.png",
+          "source_region": {
+            "left": 1454,
+            "top": 467,
+            "width": 14,
+            "height": 38
+          }
+        },
+        {
+          "path": "templates/scan_1d248ce7b8164de296925a119202376f_004.png",
+          "source_region": {
+            "left": 1822,
+            "top": 694,
+            "width": 45,
+            "height": 86
+          }
+        },
+        {
+          "path": "templates/scan_1d248ce7b8164de296925a119202376f_005.png",
+          "source_region": {
+            "left": 1214,
+            "top": 870,
+            "width": 26,
+            "height": 22
+          }
+        }
+      ],
+      "scan_zones": [
+        {
+          "left": 798,
+          "top": 239,
+          "width": 1313,
+          "height": 961
+        }
+      ]
+    }
+  ],
+  "scan_match_threshold": 0.82,
+  "maze_exit_threshold": 0.88,
+  "maze_transition_seconds": 1.5,
+  "maze_exit_scans": {
+    "north": null,
+    "east": null,
+    "south": null,
+    "west": null
+  },
+  "maze_move_points": {
+    "north": null,
+    "east": null,
+    "south": null,
+    "west": null
+  },
+  "maze_teleporter_points": {
+    "place": [
+      null,
+      null,
+      null
+    ],
+    "return": [
+      null,
+      null
+    ]
+  },
+  "impact_boost": 3.0
+}

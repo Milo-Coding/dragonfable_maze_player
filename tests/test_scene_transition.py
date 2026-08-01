@@ -2,6 +2,7 @@ import unittest
 
 import numpy as np
 
+from bot.controller import BotController
 from bot.maze import MazeMemory, Tile
 from bot.vision import (
     PlayerMovementTracker,
@@ -201,6 +202,28 @@ class MazeMemoryTests(unittest.TestCase):
         self.assertIsNone(
             maze.recommended_action(can_place=True, can_return=True)
         )
+
+
+class CreatureRoomTransitionTests(unittest.TestCase):
+    def test_creature_evidence_commits_pending_destination(self) -> None:
+        controller = BotController.__new__(BotController)
+        controller.maze = MazeMemory()
+        controller._pending_maze_move = "east"
+        controller._pending_maze_move_started_at = 0.0
+        controller._transition_frame = 1
+        controller._transition_activity_seen = True
+        controller._edges_stable_count = 0
+        controller._player_movement = PlayerMovementTracker(4.0, 2)
+        controller.on_maze_update = lambda: None
+
+        controller._commit_maze_move(
+            controller._pending_maze_move,
+            "Mog detected in the destination room",
+        )
+
+        self.assertEqual((1, 0), controller.maze.position)
+        self.assertIsNone(controller._pending_maze_move)
+        self.assertIn("Mog detected", controller.maze_transition_status)
 
 
 class PlayerMovementTrackerTests(unittest.TestCase):

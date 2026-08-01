@@ -1,0 +1,31 @@
+{
+  "monitor": 1,
+  "tick_seconds": 0.35,
+  "click_interval_seconds": 1.25,
+  "anchor_threshold": 0.82,
+  "anchor_region": null,
+  "anchor_template": null,
+  "view_zones": [],
+  "action_zones": [],
+  "hidden_layers": [64, 32],
+  "learning_rate": 0.01,
+  "mode_bindings": {
+    "training": "mouse:x1",
+    "live": "mouse:x2"
+  },
+  "tasks": [],
+  "scan_targets": [],
+  "scan_match_threshold": 0.82
+  ,"maze_exit_threshold": 0.88,
+  "maze_transition_seconds": 1.5,
+  "maze_exit_scans": {
+    "north": null, "east": null, "south": null, "west": null
+  },
+  "maze_move_points": {
+    "north": null, "east": null, "south": null, "west": null
+  },
+  "maze_teleporter_points": {
+    "place": [null, null, null],
+    "return": [null, null]
+  }
+}
