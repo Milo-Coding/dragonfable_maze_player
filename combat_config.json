@@ -115,27 +115,6 @@
   },
   "tasks": [
     {
-      "id": "061e13fef4604587bb7ff1711cbf76c3",
-      "name": "close_popup",
-      "behavior": "simple",
-      "enabled": false,
-      "simple_point": {
-        "x": 1274,
-        "y": 86
-      },
-      "anchors": [
-        {
-          "region": {
-            "left": 430,
-            "top": 56,
-            "width": 353,
-            "height": 51
-          },
-          "template": "templates/task_061e13fef4604587bb7ff1711cbf76c3_anchor.png"
-        }
-      ]
-    },
-    {
       "id": "b9c535812af74f8cb0def6e81a71db06",
       "name": "Quest_Completed",
       "behavior": "simple",
@@ -199,6 +178,48 @@
       ]
     },
     {
+      "id": "3cb36a81311d4c0f9318ce5a2b8e6ce0",
+      "name": "Proc Medal",
+      "behavior": "simple",
+      "enabled": true,
+      "anchors": [
+        {
+          "region": {
+            "left": 898,
+            "top": 419,
+            "width": 426,
+            "height": 51
+          },
+          "template": "templates/task_3cb36a81311d4c0f9318ce5a2b8e6ce0_anchor_001.png"
+        }
+      ],
+      "simple_point": {
+        "x": 1320,
+        "y": 1163
+      }
+    },
+    {
+      "id": "c6a0e264f8924dd7abd0ac09fcc4b7a9",
+      "name": "Level_up",
+      "behavior": "simple",
+      "enabled": true,
+      "anchors": [
+        {
+          "region": {
+            "left": 1031,
+            "top": 493,
+            "width": 533,
+            "height": 144
+          },
+          "template": "templates/task_c6a0e264f8924dd7abd0ac09fcc4b7a9_anchor_001.png"
+        }
+      ],
+      "simple_point": {
+        "x": 1312,
+        "y": 1187
+      }
+    },
+    {
       "id": "728060f2b2184b43a26980558377d485",
       "name": "combat",
       "behavior": "combat",
@@ -218,7 +239,7 @@
     },
     {
       "id": "b70298eaced745d39e4969fcb2284f96",
-      "name": "to_battle",
+      "name": "to_battle_fire_rift_war",
       "behavior": "simple",
       "enabled": true,
       "simple_point": {
@@ -325,27 +346,6 @@
       "enabled": false,
       "anchors": [],
       "simple_point": null
-    },
-    {
-      "id": "c6a0e264f8924dd7abd0ac09fcc4b7a9",
-      "name": "Level_up",
-      "behavior": "simple",
-      "enabled": true,
-      "anchors": [
-        {
-          "region": {
-            "left": 1031,
-            "top": 493,
-            "width": 533,
-            "height": 144
-          },
-          "template": "templates/task_c6a0e264f8924dd7abd0ac09fcc4b7a9_anchor_001.png"
-        }
-      ],
-      "simple_point": {
-        "x": 1312,
-        "y": 1187
-      }
     }
   ],
   "scan_targets": [
